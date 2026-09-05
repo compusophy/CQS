@@ -5,7 +5,7 @@
 
 use gemini::Value;
 
-/// One map tile is this many pixels; 32×18 tiles is 768×432, a 16:9 frame.
+/// One map tile is this many pixels; 32×32 tiles is 768×768, a square frame.
 pub const TILE: i32 = 24;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -51,6 +51,15 @@ pub struct Figure {
     pub npc: bool,
 }
 
+/// Something said lately, to be drawn over whoever said it.
+#[derive(Clone, Debug, Default)]
+pub struct Bubble {
+    pub name: String,
+    pub text: String,
+    #[allow(dead_code)]
+    pub tick: u64,
+}
+
 /// Everything the renderer knows about one moment of the world.
 #[derive(Clone, Debug, Default)]
 pub struct Scene {
@@ -61,6 +70,7 @@ pub struct Scene {
     pub tiles: Vec<Tile>,
     pub places: Vec<Mark>,
     pub figures: Vec<Figure>,
+    pub speech: Vec<Bubble>,
 }
 
 impl Scene {
@@ -109,6 +119,16 @@ impl Scene {
             me: false,
             npc: true,
         }));
+        let speech = v
+            .get("speech")
+            .as_arr()
+            .iter()
+            .map(|s| Bubble {
+                name: s.get("name").to_text(),
+                text: s.get("text").to_text(),
+                tick: s.get("tick").as_f64().unwrap_or(0.0) as u64,
+            })
+            .collect();
         Some(Scene {
             w,
             h,
@@ -116,6 +136,7 @@ impl Scene {
             tiles,
             places,
             figures,
+            speech,
         })
     }
 
@@ -281,6 +302,37 @@ pub fn text_width(s: &str, scale: i32) -> i32 {
     s.chars().count() as i32 * 6 * scale
 }
 
+/// Break text into lines of at most `cols` glyphs, on spaces where possible.
+pub fn wrap(s: &str, cols: usize, max_lines: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for word in s.split_whitespace() {
+        let word: String = word.chars().take(cols).collect();
+        if !cur.is_empty() && cur.chars().count() + 1 + word.chars().count() > cols {
+            lines.push(std::mem::take(&mut cur));
+            if lines.len() == max_lines {
+                break;
+            }
+        }
+        if !cur.is_empty() {
+            cur.push(' ');
+        }
+        cur.push_str(&word);
+    }
+    if !cur.is_empty() && lines.len() < max_lines {
+        lines.push(cur);
+    } else if !cur.is_empty() {
+        // Ran out of lines with words left: mark the cut.
+        if let Some(last) = lines.last_mut() {
+            if last.chars().count() > cols - 1 {
+                *last = last.chars().take(cols - 1).collect();
+            }
+            last.push('…');
+        }
+    }
+    lines
+}
+
 /// A small, fast, deterministic hash: the same speckle every frame.
 fn hash(x: i32, y: i32, salt: u32) -> u32 {
     let mut h = (x as u32).wrapping_mul(0x9E37_79B9)
@@ -369,6 +421,7 @@ pub fn draw(f: &mut Frame, prev: Option<&Scene>, cur: &Scene, t: f32, ms: f64) {
     // Figures, back to front so nearer ones overlap
     let mut order: Vec<usize> = (0..cur.figures.len()).collect();
     order.sort_by_key(|&i| cur.figures[i].y);
+    let mut heads: Vec<(usize, i32, i32)> = Vec::new();
     for i in order {
         let fig = &cur.figures[i];
         let before = prev.and_then(|s| {
@@ -382,6 +435,21 @@ pub fn draw(f: &mut Frame, prev: Option<&Scene>, cur: &Scene, t: f32, ms: f64) {
             .unwrap_or(false)
             && fig.doing == "walk";
         draw_figure(f, fig, px, py, moving, phase);
+        heads.push((i, px + TILE / 2, py + TILE - 3 - 13 - 12));
+    }
+    // Speech, over whoever said it; the newest for each speaker wins.
+    let mut spoken: Vec<&str> = Vec::new();
+    for b in &cur.speech {
+        if spoken.contains(&b.name.as_str()) {
+            continue;
+        }
+        if let Some((_, hx, hy)) = heads
+            .iter()
+            .find(|(i, _, _)| cur.figures[*i].name == b.name)
+        {
+            draw_bubble(f, *hx, *hy - 4, &b.text);
+            spoken.push(&b.name);
+        }
     }
     // Vignette so the edges of the world read as edges
     for x in 0..f.w {
@@ -391,6 +459,27 @@ pub fn draw(f: &mut Frame, prev: Option<&Scene>, cur: &Scene, t: f32, ms: f64) {
     for y in 0..f.h {
         f.blend(0, y, 0x000000, 90);
         f.blend(f.w - 1, y, 0x000000, 90);
+    }
+}
+
+fn draw_bubble(f: &mut Frame, cx: i32, bottom: i32, text: &str) {
+    let lines = wrap(text, 22, 3);
+    if lines.is_empty() {
+        return;
+    }
+    let w = lines.iter().map(|l| text_width(l, 1)).max().unwrap_or(0) + 8;
+    let h = lines.len() as i32 * 8 + 5;
+    let x = (cx - w / 2).clamp(1, f.w - w - 1);
+    let y = (bottom - h - 4).max(1);
+    f.shade_rect(x + 1, y + 1, w, h, 0x000000, 90);
+    f.fill_rect(x, y, w, h, 0xf6f1e4);
+    f.fill_rect(x + 1, y + 1, w - 2, h - 2, 0xfffdf6);
+    // The tail toward the speaker.
+    f.fill_rect(cx - 2, y + h, 4, 1, 0xf6f1e4);
+    f.fill_rect(cx - 1, y + h + 1, 2, 1, 0xf6f1e4);
+    f.put(cx, y + h + 2, 0xf6f1e4);
+    for (i, line) in lines.iter().enumerate() {
+        f.text(x + 4, y + 3 + i as i32 * 8, line, 0x1b1f26, 1);
     }
 }
 
@@ -428,7 +517,7 @@ fn draw_tile(f: &mut Frame, s: &Scene, tx: i32, ty: i32, ms: f64) {
                     }
                 }
             }
-            // Shoreline: darken grass next to water.
+            // Shoreline: sand where grass meets water.
             for (dx, dy) in [(0, -1), (0, 1), (-1, 0), (1, 0)] {
                 if s.tile(tx + dx, ty + dy) == Tile::Water {
                     let (rx, ry, rw, rh) = match (dx, dy) {
@@ -743,11 +832,17 @@ fn glyph(c: char) -> Option<[&'static str; 7]> {
         '\'' => [
             "..#..", "..#..", ".....", ".....", ".....", ".....", ".....",
         ],
+        '"' => [
+            ".#.#.", ".#.#.", ".....", ".....", ".....", ".....", ".....",
+        ],
         '-' => [
             ".....", ".....", ".....", ".###.", ".....", ".....", ".....",
         ],
         ':' => [
             ".....", ".....", "..#..", ".....", ".....", "..#..", ".....",
+        ],
+        ';' => [
+            ".....", ".....", "..#..", ".....", ".....", "..#..", ".#...",
         ],
         '!' => [
             "..#..", "..#..", "..#..", "..#..", "..#..", ".....", "..#..",
@@ -760,6 +855,15 @@ fn glyph(c: char) -> Option<[&'static str; 7]> {
         ],
         '_' => [
             ".....", ".....", ".....", ".....", ".....", ".....", "#####",
+        ],
+        '(' => [
+            "..#..", ".#...", ".#...", ".#...", ".#...", ".#...", "..#..",
+        ],
+        ')' => [
+            "..#..", "...#.", "...#.", "...#.", "...#.", "...#.", "..#..",
+        ],
+        '…' => [
+            ".....", ".....", ".....", ".....", ".....", ".....", "#.#.#",
         ],
         _ => return None,
     })
@@ -775,6 +879,21 @@ mod tests {
         let me = w.join("Ada");
         w.apply(
             me,
+            &world::Command::CreateNpc {
+                name: "Wren".into(),
+                persona: "A forager who talks to birds.".into(),
+            },
+        )
+        .unwrap();
+        w.apply(
+            me,
+            &world::Command::Say {
+                text: "hello there, what a fine morning to be alive in this world".into(),
+            },
+        )
+        .unwrap();
+        w.apply(
+            me,
             &world::Command::Gather {
                 resource: "iron".into(),
                 amount: None,
@@ -786,14 +905,25 @@ mod tests {
         }
         let json = w.scene(Some(me));
         let scene = Scene::from_json(&json).expect("scene parses");
-        assert_eq!(scene.figures.len(), 1);
+        assert_eq!(scene.figures.len(), 2);
         assert!(scene.figures[0].me);
+        assert_eq!(scene.w, scene.h, "the world is square");
         let mut f = Frame::new(scene.w * TILE, scene.h * TILE);
         draw(&mut f, None, &scene, 1.0, 1234.0);
         assert!(f.px.chunks(4).all(|p| p[3] == 255));
         let mut prev = scene.clone();
         prev.figures[0].x -= 1;
         draw(&mut f, Some(&prev), &scene, 0.5, 5678.0);
-        assert_eq!(text_width("KYLE", 1), 24);
+        assert_eq!(text_width("ADA", 1), 18);
+        assert_eq!(
+            wrap(
+                "hello there, what a fine morning to be alive in this world",
+                22,
+                3
+            )
+            .len(),
+            3
+        );
+        assert_eq!(wrap("hi", 22, 3), vec!["hi".to_string()]);
     }
 }

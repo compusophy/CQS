@@ -99,9 +99,80 @@ impl World {
                     .with_opt("resource", res)
             })
             .collect();
+        // What was said lately, for speech bubbles.
+        let speech: Vec<Value> = self
+            .events
+            .iter()
+            .rev()
+            .filter(|e| (e.kind == "say" || e.kind == "voice") && e.tick + 8 >= self.tick)
+            .take(12)
+            .map(|e| {
+                let said = e
+                    .text
+                    .strip_prefix("says \"")
+                    .and_then(|s| s.strip_suffix('"'))
+                    .unwrap_or(&e.text);
+                obj! {"name" => e.name.as_str(), "text" => said, "tick" => e.tick}
+            })
+            .collect();
         obj! {
             "w" => W, "h" => H, "tick" => self.tick,
             "tiles" => rows, "places" => places, "npcs" => npcs, "players" => players,
+            "speech" => speech,
+        }
+    }
+
+    /// One character's standing, as fields a header can lay out.
+    pub fn status(&self, me: PlayerId) -> Value {
+        let Some(p) = self.player(me) else {
+            return Value::Null;
+        };
+        let doing = match &p.task {
+            Task::Idle => "idle".to_string(),
+            Task::Walk { to, then: None } => format!("walking to {}", self.label(*to)),
+            Task::Walk {
+                to,
+                then: Some(next),
+            } => format!("walking to {} to {next}", self.label(*to)),
+            Task::Gather {
+                resource,
+                want: Some(w),
+                got,
+            } => format!("gathering {resource} ({got}/{w})"),
+            Task::Gather {
+                resource,
+                want: None,
+                got,
+            } => format!("gathering {resource} ({got} so far)"),
+        };
+        let mut then: Vec<String> = p.queue.iter().map(|c| c.to_string()).collect();
+        if let Some((rname, _)) = &p.looping {
+            then.push(format!("repeat '{rname}'"));
+        }
+        let skills: Vec<Value> =
+            p.xp.iter()
+                .map(|(sk, _)| arr![sk.as_str(), p.level(sk)])
+                .collect();
+        let recipes: Vec<Value> = p
+            .recipes
+            .iter()
+            .map(|(n, steps)| {
+                arr![
+                    n.as_str(),
+                    steps
+                        .iter()
+                        .map(|c| c.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ]
+            })
+            .collect();
+        obj! {
+            "name" => p.name.as_str(), "x" => p.x, "y" => p.y,
+            "place" => self.place_at(p.x, p.y).map(|pl| pl.name.clone()),
+            "doing" => doing, "then" => then.join(", "),
+            "carrying" => list(&p.inventory), "bank" => list(&p.bank),
+            "skills" => skills, "recipes" => recipes,
         }
     }
 
@@ -144,7 +215,7 @@ impl World {
             .events
             .iter()
             .skip(skip)
-            .map(|e| obj! {"tick" => e.tick, "name" => e.name.as_str(), "text" => e.text.as_str()})
+            .map(|e| obj! {"tick" => e.tick, "name" => e.name.as_str(), "text" => e.text.as_str(), "kind" => e.kind})
             .collect();
         let speeches: Vec<Value> = self
             .speeches
@@ -262,6 +333,12 @@ impl World {
                 tick: e.get("tick").as_f64().unwrap_or(0.0) as u64,
                 name: e.get("name").to_text(),
                 text: e.get("text").to_text(),
+                kind: match e.get("kind").as_str() {
+                    Some("say") => "say",
+                    Some("voice") => "voice",
+                    Some("join") => "join",
+                    _ => "note",
+                },
             })
             .collect();
         let speeches = v

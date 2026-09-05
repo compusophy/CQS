@@ -34,8 +34,8 @@ pub trait Ledger: Send + Sync {
     fn append(&self, e: &Entry) -> Result<u64, String>;
     /// Store a snapshot covering entries up to and including `last_id`.
     fn snapshot(&self, last_id: u64, realm: &Value) -> Result<(), String>;
-    /// Every entry ever, in order: the whole history, for replays and audits.
-    fn all(&self) -> Result<Vec<Entry>, String>;
+    /// Every entry ever, in order, with ids: the whole history, for replays and audits.
+    fn all(&self) -> Result<Vec<(u64, Entry)>, String>;
 }
 
 /// An in-memory ledger, for tests and for a single-process server.
@@ -68,8 +68,14 @@ impl Ledger for Memory {
         }
         Ok(())
     }
-    fn all(&self) -> Result<Vec<Entry>, String> {
-        Ok(self.inner.lock().unwrap().0.clone())
+    fn all(&self) -> Result<Vec<(u64, Entry)>, String> {
+        let g = self.inner.lock().unwrap();
+        Ok(g.0
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(i, e)| (i as u64 + 1, e))
+            .collect())
     }
 }
 
@@ -146,9 +152,21 @@ impl Host {
     /// Fold the ledger and bring the realm to `now`. Returns the realm and the
     /// id of the last entry folded (0 when the ledger is empty).
     fn load(&self, now: u64) -> Result<(Realm, u64), String> {
-        let (snap, tail) = self.ledger.load()?;
-        let (mut realm, mut last_id) = match snap {
-            Some((id, json)) => (Realm::from_json(&json)?, id),
+        let (snap, mut tail) = self.ledger.load()?;
+        let snapshot = match snap {
+            Some((id, json)) => match Realm::from_json(&json) {
+                Ok(r) => Some((r, id)),
+                Err(_) => {
+                    // A snapshot this build cannot read (the world's shape
+                    // changed): the ledger is the truth, replay all of it.
+                    tail = self.ledger.all()?;
+                    None
+                }
+            },
+            None => None,
+        };
+        let (mut realm, mut last_id) = match snapshot {
+            Some(s) => s,
             None => (
                 Realm::genesis(self.seed, tail.first().map(|(_, e)| e.at_ms).unwrap_or(now)),
                 0,
@@ -378,12 +396,23 @@ fn view_json(realm: &Realm, me: Option<PlayerId>) -> Value {
         "tick" => w.tick,
         "map" => w.ascii(),
         "scene" => w.scene(me),
+        "events" => w
+            .events
+            .iter()
+            .rev()
+            .take(40)
+            .map(|e| obj! {"tick" => e.tick, "name" => e.name.as_str(), "text" => e.text.as_str(), "kind" => e.kind})
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>(),
         "players" => w.players.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
     };
     match me.and_then(|id| w.player(id)) {
         Some(p) => {
             v.set("name", p.name.as_str());
             v.set("view", w.describe(p.id));
+            v.set("status", w.status(p.id));
         }
         None => {
             let recent: Vec<String> = w
@@ -547,8 +576,20 @@ mod tests {
             t + 5000,
         );
         let with = h2.load(t + 60_000).unwrap().0;
-        let without = Realm::fold(7, &h2.ledger.all().unwrap(), t + 60_000);
+        let all: Vec<Entry> = h2
+            .ledger
+            .all()
+            .unwrap()
+            .into_iter()
+            .map(|(_, e)| e)
+            .collect();
+        let without = Realm::fold(7, &all, t + 60_000);
         assert_eq!(with, without);
+        // A snapshot this code cannot read is replayed around, not tripped over.
+        h2.ledger
+            .snapshot(99, &obj! {"world" => "not a world"})
+            .unwrap();
+        assert_eq!(h2.load(t + 60_000).unwrap().0, without);
     }
 
     #[test]

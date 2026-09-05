@@ -21,7 +21,7 @@ use std::collections::VecDeque;
 use std::fmt;
 
 pub const W: i32 = 32;
-pub const H: i32 = 18;
+pub const H: i32 = 32;
 
 /// Caps that keep one loud player from filling the world.
 pub const MAX_NPCS_PER_PLAYER: usize = 5;
@@ -250,6 +250,8 @@ pub struct Event {
     /// Who did it — a player or an NPC, by name.
     pub name: String,
     pub text: String,
+    /// "note", "say", "voice" or "join": what a console should make of it.
+    pub kind: &'static str,
 }
 
 /// Words said within earshot of an NPC, waiting for a voice. The world cannot
@@ -378,13 +380,19 @@ impl World {
                 }
             }
         };
-        let forest = (24 + rng.below(3), 10 + rng.below(3));
-        let hill = (17 + rng.below(4), 2 + rng.below(2));
-        let quarry = (26 + rng.below(3), 2 + rng.below(2));
-        blob(&mut tiles, &mut rng, forest.0, forest.1, 4, Tile::Forest);
-        blob(&mut tiles, &mut rng, hill.0, hill.1, 3, Tile::Hill);
+        let forest = (24 + rng.below(3), 21 + rng.below(3));
+        let hill = (17 + rng.below(4), 5 + rng.below(2));
+        let quarry = (27 + rng.below(3), 5 + rng.below(2));
+        blob(&mut tiles, &mut rng, forest.0, forest.1, 5, Tile::Forest);
+        blob(&mut tiles, &mut rng, hill.0, hill.1, 4, Tile::Hill);
         blob(&mut tiles, &mut rng, quarry.0, quarry.1, 2, Tile::Hill);
-        let town = (16, 9);
+        // A lake in the south-east and a pine stand in the north-west: scenery
+        // and room, not places — those are for players to found.
+        let lake = (26 + rng.below(3), 28 + rng.below(2));
+        let pines = (3 + rng.below(2), 4 + rng.below(3));
+        blob(&mut tiles, &mut rng, lake.0, lake.1, 3, Tile::Water);
+        blob(&mut tiles, &mut rng, pines.0, pines.1, 3, Tile::Forest);
+        let town = (16, 16);
         for y in town.1 - 1..=town.1 + 1 {
             for x in town.0 - 2..=town.0 + 2 {
                 tiles[at(x, y)] = Tile::Town;
@@ -407,7 +415,7 @@ impl World {
                 fishing = (x + 1, town.1);
             }
         }
-        let creek = (5, 14 + rng.below(3));
+        let creek = (5, 26 + rng.below(3));
         let seeded =
             |name: &str, (x, y): (i32, i32), res: Option<(&str, &str)>, desc: &str| Place {
                 name: name.into(),
@@ -488,14 +496,14 @@ impl World {
     pub fn join(&mut self, name: impl Into<String>) -> PlayerId {
         let id = PlayerId(self.next_id);
         self.next_id += 1;
-        let town = &self.places[0];
-        let n = self.players.len() as i32;
+        let (tx, ty) = (self.places[0].x, self.places[0].y);
+        let (x, y) = self.free_spot_near(tx, ty, None);
         let name = name.into();
         self.players.push(Player {
             id,
             name: name.clone(),
-            x: town.x + (n % 5) - 2,
-            y: town.y + (n / 5) % 3 - 1,
+            x,
+            y,
             inventory: Vec::new(),
             bank: Vec::new(),
             xp: Vec::new(),
@@ -505,7 +513,7 @@ impl World {
             recipes: Vec::new(),
             looping: None,
         });
-        self.note(&name, "arrived in Town");
+        self.note_kind("join", &name, "arrived in Town");
         id
     }
 
@@ -576,7 +584,7 @@ impl World {
     pub fn npc_says(&mut self, id: NpcId, text: &str) {
         if let Some(n) = self.npc(id) {
             let name = n.name.clone();
-            self.note(&name, format!("says \"{}\"", tidy(text, TEXT_MAX)));
+            self.note_kind("voice", &name, format!("says \"{}\"", tidy(text, TEXT_MAX)));
         }
     }
     /// Everything said to an NPC since the last call, oldest first.
@@ -594,14 +602,57 @@ impl World {
     }
 
     fn note(&mut self, name: &str, text: impl Into<String>) {
+        self.note_kind("note", name, text);
+    }
+
+    fn note_kind(&mut self, kind: &'static str, name: &str, text: impl Into<String>) {
         self.events.push(Event {
             tick: self.tick,
             name: name.to_string(),
             text: text.into(),
+            kind,
         });
         if self.events.len() > 200 {
             self.events.drain(..100);
         }
+    }
+
+    fn occupied(&self, x: i32, y: i32, except: Option<PlayerId>) -> bool {
+        self.players
+            .iter()
+            .any(|p| Some(p.id) != except && p.pos() == (x, y))
+            || self.npcs.iter().any(|n| (n.x, n.y) == (x, y))
+    }
+
+    /// The nearest walkable tile to (x, y) that nobody stands on, searching
+    /// outward ring by ring. `except` is the one asking, who may keep their
+    /// own tile. Nobody ever stands on anybody.
+    pub fn free_spot_near(&self, x: i32, y: i32, except: Option<PlayerId>) -> (i32, i32) {
+        for r in 0i32..=8 {
+            let mut best: Option<((i32, i32), i32)> = None;
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    if dx.abs().max(dy.abs()) != r {
+                        continue;
+                    }
+                    let (tx, ty) = (x + dx, y + dy);
+                    if tx < 0 || ty < 0 || tx >= W || ty >= H {
+                        continue;
+                    }
+                    if !self.tile(tx, ty).walkable() || self.occupied(tx, ty, except) {
+                        continue;
+                    }
+                    let d = dx * dx + dy * dy;
+                    if best.map_or(true, |(_, bd)| d < bd) {
+                        best = Some(((tx, ty), d));
+                    }
+                }
+            }
+            if let Some((spot, _)) = best {
+                return spot;
+            }
+        }
+        (x, y)
     }
 
     /// One command. `Ok` is the acknowledgement; `Err` is a refusal with a reason.
@@ -693,7 +744,9 @@ impl World {
                         self.places.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ")
                     )
                 })?;
-                if dest == (px, py) {
+                if dest == (px, py)
+                    || (self.occupied(dest.0, dest.1, Some(who)) && near(dest.0, dest.1, px, py))
+                {
                     return Ok(format!("{name} is already at {label}."));
                 }
                 self.player_mut(who).unwrap().task = Task::Walk {
@@ -768,7 +821,7 @@ impl World {
                 if text.is_empty() {
                     return Err("nothing to say".into());
                 }
-                self.note(&name, format!("says \"{text}\""));
+                self.note_kind("say", &name, format!("says \"{text}\""));
                 if let Some(n) = self.npcs.iter().find(|n| near(n.x, n.y, px, py)) {
                     let speech = Speech {
                         tick: self.tick,
@@ -953,12 +1006,13 @@ impl World {
                 }
                 let id = NpcId(self.next_npc);
                 self.next_npc += 1;
+                let (nx, ny) = self.free_spot_near(px, py, None);
                 self.npcs.push(Npc {
                     id,
                     name: nname.clone(),
                     persona,
-                    x: px,
-                    y: py,
+                    x: nx,
+                    y: ny,
                     creator: who,
                 });
                 self.note(&name, format!("brought {nname} into the world"));
@@ -1032,6 +1086,16 @@ impl World {
                         (p.x, p.y) == to || (then.is_some() && near(p.x, p.y, to.0, to.1));
                     if arrived {
                         self.player_mut(id).unwrap().task = Task::Idle;
+                        // Nobody stands on anybody: settle onto the nearest free
+                        // tile that still counts as being there.
+                        if self.occupied(p.x, p.y, Some(id)) {
+                            let (sx, sy) = self.free_spot_near(to.0, to.1, Some(id));
+                            if then.is_none() || near(sx, sy, to.0, to.1) {
+                                let me = self.player_mut(id).unwrap();
+                                me.x = sx;
+                                me.y = sy;
+                            }
+                        }
                         match then {
                             Some(next) => {
                                 if let Err(e) = self.apply_one(id, &next) {
@@ -1418,15 +1482,11 @@ mod tests {
                 },
             )
             .unwrap();
-            for _ in 0..80 {
+            for _ in 0..140 {
                 w.step();
             }
-            assert_eq!(
-                w.player(me).unwrap().pos(),
-                (pl.x, pl.y),
-                "did not reach {}",
-                pl.name
-            );
+            let at = w.player(me).unwrap().pos();
+            assert!(near(at.0, at.1, pl.x, pl.y), "did not reach {}", pl.name);
         }
     }
 
@@ -1537,7 +1597,7 @@ mod tests {
         );
         assert!(w.describe(me).contains("Then: bank"));
         // Out of earshot, speech is just speech.
-        for _ in 0..30 {
+        for _ in 0..14 {
             w.step();
         }
         w.apply(me, &Command::Say { text: "far".into() }).unwrap();

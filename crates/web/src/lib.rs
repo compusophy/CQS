@@ -1,7 +1,7 @@
 //! The browser client. Rust all the way down to the pixels: the page has a
-//! name box, a prompt box, a canvas, the view and a log, and this crate wires
-//! them. The world is rasterized into a framebuffer by `draw` and presented
-//! whole with `putImageData`; the browser draws nothing itself.
+//! header for your character, a square canvas, a prompt box and a console,
+//! and this crate wires them. The world is rasterized into a framebuffer by
+//! `draw` and presented whole with `putImageData`; the browser draws nothing.
 //!
 //! Identity, for now, is a random token in `localStorage` — enough to test a
 //! shared world with; a real login replaces it later without touching the
@@ -13,6 +13,7 @@
 mod draw;
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use wasm_bindgen::prelude::*;
@@ -25,6 +26,7 @@ use gemini::{obj, Value};
 
 const API: &str = "/api/world";
 const POLL_MS: i32 = 3000;
+const CONSOLE_LINES: u32 = 200;
 
 #[wasm_bindgen(start)]
 pub fn start() {
@@ -144,6 +146,8 @@ struct Display {
     /// When `cur` arrived and how long to take walking from `prev` to it.
     cur_at: f64,
     span: f64,
+    /// Events already in the console, so a poll never repeats one.
+    seen: HashSet<String>,
 }
 
 type Shared = Rc<RefCell<Display>>;
@@ -167,6 +171,7 @@ impl Display {
             cur: None,
             cur_at: 0.0,
             span: 1000.0,
+            seen: HashSet::new(),
         })
     }
 
@@ -190,7 +195,7 @@ impl Display {
         let want_h = cur.h * TILE;
         if self.frame.w != want_w || self.frame.h != want_h {
             self.frame = Frame::new(want_w, want_h);
-            if let Ok(canvas) = self.ctx.canvas().ok_or(()) {
+            if let Some(canvas) = self.ctx.canvas() {
                 canvas.set_width(want_w as u32);
                 canvas.set_height(want_h as u32);
             }
@@ -222,6 +227,122 @@ fn start_render_loop(display: Shared) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The page: header, console
+// ---------------------------------------------------------------------------
+
+/// The permanent header: who you are, where, doing what, and what you hold.
+fn render_status(v: &Value) {
+    let tick = v.get("tick").as_f64().unwrap_or(0.0) as u64;
+    let s = v.get("status");
+    if s.is_null() {
+        set_text("who", "watching");
+        set_text("where", &format!("tick {tick}"));
+        set_text("doing", "pick a name to play");
+        set_text("holding", "");
+        set_text("skills", "");
+        set_text("recipes", "");
+        return;
+    }
+    set_text("who", s.get("name").as_str().unwrap_or(""));
+    let place = s
+        .get("place")
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            format!(
+                "({},{})",
+                s.get("x").as_i64().unwrap_or(0),
+                s.get("y").as_i64().unwrap_or(0)
+            )
+        });
+    set_text("where", &format!("{place} · tick {tick}"));
+    let then = s.get("then").to_text();
+    let doing = s.get("doing").to_text();
+    set_text(
+        "doing",
+        &if then.is_empty() {
+            doing
+        } else {
+            format!("{doing}, then {then}")
+        },
+    );
+    let list = |key: &str| -> String {
+        let items: Vec<String> = s
+            .get(key)
+            .as_arr()
+            .iter()
+            .map(|p| format!("{} {}", p.at(1).to_text(), p.at(0).to_text()))
+            .collect();
+        if items.is_empty() {
+            "nothing".to_string()
+        } else {
+            items.join(", ")
+        }
+    };
+    set_text(
+        "holding",
+        &format!("carrying {} · bank {}", list("carrying"), list("bank")),
+    );
+    let skills: Vec<String> = s
+        .get("skills")
+        .as_arr()
+        .iter()
+        .map(|p| format!("{} {}", p.at(0).to_text(), p.at(1).to_text()))
+        .collect();
+    set_text(
+        "skills",
+        &if skills.is_empty() {
+            String::new()
+        } else {
+            format!("skills: {}", skills.join(", "))
+        },
+    );
+    let recipes: Vec<String> = s
+        .get("recipes")
+        .as_arr()
+        .iter()
+        .map(|p| format!("{} = {}", p.at(0).to_text(), p.at(1).to_text()))
+        .collect();
+    set_text(
+        "recipes",
+        &if recipes.is_empty() {
+            String::new()
+        } else {
+            format!("recipes: {}", recipes.join("; "))
+        },
+    );
+}
+
+/// One console line, in order, newest at the bottom, scrolled into view.
+fn console(kind: &str, tick: Option<u64>, text: &str) {
+    let doc = document();
+    let Some(el) = doc.get_element_by_id("log") else {
+        return;
+    };
+    let Ok(line) = doc.create_element("div") else {
+        return;
+    };
+    line.set_class_name(&format!("line {kind}"));
+    if let Ok(stamp) = doc.create_element("span") {
+        stamp.set_class_name("tick");
+        stamp.set_text_content(Some(&tick.map(|t| format!("t{t}")).unwrap_or_default()));
+        let _ = line.append_child(&stamp);
+    }
+    if let Ok(body) = doc.create_element("span") {
+        body.set_text_content(Some(text));
+        let _ = line.append_child(&body);
+    }
+    let _ = el.append_child(&line);
+    while el.child_element_count() > CONSOLE_LINES {
+        if let Some(first) = el.first_element_child() {
+            first.remove();
+        }
+    }
+    el.set_scroll_top(el.scroll_height());
+}
+
+/// Fold a server response into the page: scene, header, and new events.
 fn render_view(display: &Shared, v: &Value) {
     let scene = v.get("scene");
     if !scene.is_null() {
@@ -232,34 +353,27 @@ fn render_view(display: &Shared, v: &Value) {
         let t = now();
         d.render(t);
     }
-    if let Some(view) = v.get("view").as_str() {
-        set_text("view", view);
-    }
-    let tick = v.get("tick").as_f64().unwrap_or(0.0) as u64;
-    match v.get("name").as_str() {
-        Some(name) => set_text("who", &format!("{name} · tick {tick}")),
-        None => set_text("who", &format!("watching · tick {tick}")),
-    }
-    for line in v.get("said").as_arr() {
-        if let Some(s) = line.as_str() {
-            log(s);
+    render_status(v);
+    let mut d = display.borrow_mut();
+    for e in v.get("events").as_arr() {
+        let tick = e.get("tick").as_f64().unwrap_or(0.0) as u64;
+        let name = e.get("name").to_text();
+        let text = e.get("text").to_text();
+        let kind = e.get("kind").as_str().unwrap_or("note");
+        let key = format!("{tick}|{name}|{text}");
+        if !d.seen.insert(key) {
+            continue;
         }
-    }
-}
-
-fn log(line: &str) {
-    let doc = document();
-    let Some(el) = doc.get_element_by_id("log") else {
-        return;
-    };
-    if let Ok(p) = doc.create_element("div") {
-        p.set_text_content(Some(line));
-        let _ = el.insert_before(&p, el.first_child().as_ref());
-        while el.child_element_count() > 40 {
-            if let Some(last) = el.last_element_child() {
-                last.remove();
-            }
-        }
+        let shown = match kind {
+            "say" | "voice" => format!(
+                "{name}: {}",
+                text.strip_prefix("says ")
+                    .unwrap_or(&text)
+                    .trim_matches('"')
+            ),
+            _ => format!("{name} {text}"),
+        };
+        console(kind, Some(tick), &shown);
     }
 }
 
@@ -269,6 +383,19 @@ fn log(line: &str) {
 
 fn run_demo(display: Shared) {
     use world::{Command, World};
+    fn view(w: &World, me: world::PlayerId) -> Value {
+        let events: Vec<Value> = w
+            .events
+            .iter()
+            .rev()
+            .take(40)
+            .map(|e| obj! {"tick" => e.tick, "name" => e.name.as_str(), "text" => e.text.as_str(), "kind" => e.kind})
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        obj! {"scene" => w.scene(Some(me)), "status" => w.status(me), "tick" => w.tick, "name" => "You", "events" => events}
+    }
     let mut w = World::new(7);
     let me = w.join("You");
     let ann = w.join("Ann");
@@ -295,6 +422,26 @@ fn run_demo(display: Shared) {
             forever: true,
         },
     );
+    let _ = w.apply(
+        me,
+        &Command::CreateNpc {
+            name: "Wren".into(),
+            persona: "A forager who talks to birds.".into(),
+        },
+    );
+    let _ = w.apply(
+        me,
+        &Command::CreateNpc {
+            name: "Old Marn".into(),
+            persona: "A miner who remembers.".into(),
+        },
+    );
+    let _ = w.apply(
+        me,
+        &Command::Say {
+            text: "Morning, Wren. Off to the hill for iron, then the bank.".into(),
+        },
+    );
     let _ = w.plan(
         me,
         vec![
@@ -318,22 +465,24 @@ fn run_demo(display: Shared) {
             forever: true,
         },
     );
-    let _ = w.apply(
-        me,
-        &Command::CreateNpc {
-            name: "Wren".into(),
-            persona: "A forager who talks to birds.".into(),
-        },
-    );
     show("join", false);
     show("play", false);
     set_text("status", "demo: a local world, no server");
+    render_view(&display, &view(&w, me));
     let world = Rc::new(RefCell::new(w));
     let tick = Closure::<dyn FnMut()>::new(move || {
         let mut w = world.borrow_mut();
         w.step();
-        let v = obj! {"scene" => w.scene(Some(me)), "view" => w.describe(me), "tick" => w.tick, "name" => "You"};
-        render_view(&display, &v);
+        let t = w.tick;
+        if t % 25 == 0 {
+            let _ = w.apply(
+                me,
+                &Command::Say {
+                    text: format!("tick {t} and still going"),
+                },
+            );
+        }
+        render_view(&display, &view(&w, me));
     });
     let _ = window().set_interval_with_callback_and_timeout_and_arguments_0(
         tick.as_ref().unchecked_ref(),
@@ -398,9 +547,6 @@ async fn main() -> Result<(), JsValue> {
                             show("join", false);
                             show("play", true);
                             set_text("status", "");
-                            if let Some(ack) = v.get("ack").as_str() {
-                                log(ack);
-                            }
                             render_view(&display, &v);
                             if let Some(f) = input("say") {
                                 let _ = f.focus();
@@ -436,7 +582,7 @@ async fn main() -> Result<(), JsValue> {
                     return;
                 }
                 field.set_value("");
-                log(&format!("> {words}"));
+                console("you", None, &format!("> {words}"));
                 let token = token.clone();
                 let display = display.clone();
                 spawn_local(async move {
@@ -452,14 +598,22 @@ async fn main() -> Result<(), JsValue> {
                             set_text("status", "");
                             let pilot = v.get("pilot").as_str().unwrap_or("");
                             if !pilot.is_empty() {
-                                log(&format!(
-                                    "  pilot: {pilot}  [{} ms]",
-                                    v.get("ms").as_f64().unwrap_or(0.0) as u64
-                                ));
+                                console(
+                                    "pilot",
+                                    None,
+                                    &format!(
+                                        "pilot: {pilot}  ({} ms)",
+                                        v.get("ms").as_f64().unwrap_or(0.0) as u64
+                                    ),
+                                );
                             }
                             if let Some(ack) = v.get("ack").as_str() {
                                 for line in ack.lines() {
-                                    log(line);
+                                    console(
+                                        if line.starts_with("x ") { "err" } else { "ack" },
+                                        None,
+                                        line,
+                                    );
                                 }
                             }
                             render_view(&display, &v);
