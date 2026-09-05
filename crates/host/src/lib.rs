@@ -468,11 +468,11 @@ mod tests {
         let r = h.post(&obj! {"token" => "abcdefgh", "words" => "look"}, t);
         assert_eq!(r.status, 401);
         let r = h.post(
-            &obj! {"token" => "abcdefgh", "name" => "Ada", "words" => "chop 3 wood then bank it"},
+            &obj! {"token" => "abcdefgh", "name" => "Bea", "words" => "chop 3 wood then bank it"},
             t,
         );
         assert_eq!(r.status, 200, "{}", r.body);
-        assert_eq!(r.body.get("name").as_str(), Some("Ada"));
+        assert_eq!(r.body.get("name").as_str(), Some("Bea"));
         assert!(r
             .body
             .get("pilot")
@@ -486,13 +486,13 @@ mod tests {
             .unwrap()
             .contains("heads for Old Forest"));
         // Same name, other token: refused, nothing written.
-        let r = h.post(&obj! {"token" => "zzzzzzzz", "name" => "ada"}, t + 10);
+        let r = h.post(&obj! {"token" => "zzzzzzzz", "name" => "bea"}, t + 10);
         assert_eq!(r.status, 400);
         // Two minutes later the plan has run: the wood is in the bank.
         let r = h.get(Some("abcdefgh"), t + 120_000);
         let view = r.body.get("view").as_str().unwrap();
         assert!(view.contains("Bank: 3 wood"), "{view}");
-        assert!(r.body.get("map").as_str().unwrap().contains('K'));
+        assert!(r.body.get("map").as_str().unwrap().contains('B'));
         // A spectator sees the map and the log, not a character.
         let r = h.get(None, t + 120_000);
         assert!(r
@@ -516,7 +516,7 @@ mod tests {
         let h = host();
         let t = 5_000_000u64;
         h.post(
-            &obj! {"token" => "abcdefgh", "name" => "Ada", "words" => "go north"},
+            &obj! {"token" => "abcdefgh", "name" => "Bea", "words" => "go north"},
             t,
         );
         let (snap, tail) = h.ledger.load().unwrap();
@@ -539,7 +539,7 @@ mod tests {
         // From the snapshot or from scratch, the fold agrees.
         let h2 = host();
         h2.post(
-            &obj! {"token" => "abcdefgh", "name" => "Ada", "words" => "go north"},
+            &obj! {"token" => "abcdefgh", "name" => "Bea", "words" => "go north"},
             t,
         );
         h2.post(
