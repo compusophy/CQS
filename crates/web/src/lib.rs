@@ -225,7 +225,12 @@ fn start_render_loop(display: Shared) {
 fn render_view(display: &Shared, v: &Value) {
     let scene = v.get("scene");
     if !scene.is_null() {
-        display.borrow_mut().set_scene(scene);
+        // Paint at once as well: a hidden tab gets no animation frames, and
+        // should still show the world the moment it is looked at.
+        let mut d = display.borrow_mut();
+        d.set_scene(scene);
+        let t = now();
+        d.render(t);
     }
     if let Some(view) = v.get("view").as_str() {
         set_text("view", view);
