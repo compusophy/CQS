@@ -271,3 +271,34 @@ What this costs: a request folds the tail of the ledger (microseconds) and makes
 two or three HTTPS calls to Neon (tens of milliseconds each), plus the model.
 What it buys: no process to keep alive, no server to pay for, and a world whose
 whole history is a table anyone can replay.
+
+## Scripts (2026-09-05): Lua on piccolo
+
+Kyle asked "what about Lua?" and the answer was yes, for one decisive reason: the
+model already writes Lua fluently and players know it, so no invented language
+would be written as well. The VM is **piccolo**, a pure-Rust, sandboxed,
+fuel-metered Lua; it is the first dependency the game logic has taken, and it
+lives in its own crate (`crates/script`) so `world` stays zero-dep.
+
+How it fits the ledger:
+
+- A script is a `Command` (`SetScript`) and lives on the player with a `memory`
+  table. The pilot has a `script` tool; agents can `POST {script: "..."}`.
+- The **host** runs a script only when its character is idle (nothing queued,
+  no recipe on repeat, not already run this tick), with 200k instructions of
+  fuel and at most eight steps per run. It sees `me`, `places`, `people`,
+  `tick`, `memory`, and calls `walk gather bank say found npc near dist log`.
+- What it decides is recorded as a `Ran` entry (steps, new memory, log or
+  error). Replay never runs Lua; a script's effects are data like everything
+  else. The world remains the only authority on what is legal.
+
+Also in this round: direct `cmds` in the API (no model needed), `GET ?doc`
+(the API describes itself for agents arriving cold), NPC voices answer the
+character actually addressed within two tiles and never twice, and the pilot
+no longer narrates what the game cannot do — a wish for a shop becomes a place
+and a person, not an apology.
+
+Not GitHub: persistence is the Neon ledger, and in-game programs (scripts, later
+NPC behaviour and display programs) are ledger data, not repo files. Writing
+the repo from inside the game would only matter for a vanish-style loop that
+rewrites the Rust, and Vercel's git deploy already turns a commit into a build.

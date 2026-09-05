@@ -45,6 +45,10 @@ Wren says "They say the iron sings at dusk, and that a pick answers it."
 At the prompt, `/look` redraws and `/quit` leaves; everything else is said to your
 character.
 
+Say "whenever I have 20 wood, bank it" and the pilot writes a **Lua script** for your
+character that runs whenever it is idle, in a sandboxed, fuel-metered pure-Rust VM
+(piccolo). Agents can play over the API with no model at all: `GET /api/world?doc`.
+
 ## Layout
 
 ```
@@ -56,7 +60,8 @@ crates/
     src/native.rs  --features native: ureq client (generate, stream, models, .env)
     src/web.rs     --features web:    fetch client for wasm32
     examples/chat.rs
-  world/    the simulation: map, places, NPCs, characters, tasks, plans, recipes, skills
+  world/    the simulation: map, places, NPCs, characters, tasks, plans, recipes, skills, scripts
+  script/   Lua on piccolo: a character's standing script, sandboxed and fuel-metered
     src/lib.rs     Command · plan/apply · step · describe (the text view) · ascii (the display)
     src/pilot.rs   system prompt, tool declarations, calls → Commands, the NPC voice, keyword fallback
   host/     serves a realm behind a Ledger (memory for tests, Neon over HTTPS for Vercel)
