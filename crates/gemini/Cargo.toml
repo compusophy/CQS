@@ -1,0 +1,24 @@
+[package]
+name = "gemini"
+description = "Gemini API from first principles: a zero-dependency wire core (JSON, SSE, request/response) with optional native (ureq) and browser (fetch) transports. Native + wasm32."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+# HTTPS transport for native binaries. The only place the crate spends a dependency.
+native = ["dep:ureq"]
+# fetch() transport for wasm32 (browser main thread or worker).
+web = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:web-sys"]
+
+[dependencies]
+ureq = { version = "3", optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+js-sys = { version = "0.3", optional = true }
+web-sys = { version = "0.3", optional = true, features = [
+  "Window", "WorkerGlobalScope", "Request", "RequestInit", "Response", "Headers",
+  "ReadableStream", "ReadableStreamDefaultReader",
+] }

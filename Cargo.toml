@@ -1,0 +1,39 @@
+# The workspace root is also the Vercel package: `api/world.rs` is the one
+# function, built by Vercel's Rust runtime as the binary named `world`.
+
+[package]
+name = "cqs-vercel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "world"
+path = "api/world.rs"
+
+[dependencies]
+host = { path = "crates/host" }
+
+# The runtime only builds on unix, which is where it runs.
+[target.'cfg(unix)'.dependencies]
+tokio = { version = "1", features = ["full"] }
+vercel_runtime = "2"
+http-body-util = "0.1"
+
+[workspace]
+resolver = "2"
+members = ["crates/gemini", "crates/world", "crates/host", "crates/cqs", "crates/web"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/compusophy/cqs"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"

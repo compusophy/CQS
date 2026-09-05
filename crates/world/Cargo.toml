@@ -1,0 +1,11 @@
+[package]
+name = "world"
+description = "The cqs world: a small deterministic simulation, the commands a character understands, and the pilot that turns a player's words into one of them."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Core only (no features): the JSON value and the function-declaration types.
+gemini = { path = "../gemini" }

@@ -1,0 +1,25 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# build
+/target
+**/target
+/pkg
+/web/pkg
+*.wasm
+!fixtures/**/*.wasm
+# editors / os
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+# vercel
+.vercel
+.env*
+
+# the built client ships with the repo so a push deploys; rebuild it before committing client changes
+!/public/pkg/**
+
+.env*

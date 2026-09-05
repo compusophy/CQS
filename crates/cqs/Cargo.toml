@@ -1,0 +1,15 @@
+[package]
+name = "cqs"
+description = "project cqs, at the terminal: type what your character should do; a model pilots it; the world answers."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "cqs"
+path = "src/main.rs"
+
+[dependencies]
+gemini = { path = "../gemini", features = ["native"] }
+world = { path = "../world" }

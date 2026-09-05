@@ -1,0 +1,9 @@
+# Sources for the function (api/, crates/, Cargo.*) and the static site
+# (public/, with the locally built wasm in public/pkg) ship. Nothing else.
+target
+.env
+.env.*
+docs
+*.md
+.git
+.claude

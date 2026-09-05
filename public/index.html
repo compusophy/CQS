@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cqs</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; background: #0b0d10; color: #d8dde6; font: 14px/1.45 ui-monospace, Menlo, Consolas, monospace; }
+  main { max-width: 900px; margin: 0 auto; padding: 16px; display: grid; gap: 12px; }
+  h1 { font-size: 16px; margin: 0; letter-spacing: .08em; }
+  h1 span { color: #6f7b8c; font-weight: normal; margin-left: 12px; }
+  pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
+  #map { background: #11151b; padding: 12px; border-radius: 6px; line-height: 1.15; letter-spacing: .1em; color: #9fb3c8; overflow-x: auto; white-space: pre; }
+  #view { color: #c9d1dc; }
+  input { width: 100%; box-sizing: border-box; background: #11151b; color: #eef2f7; border: 1px solid #263040; border-radius: 6px; padding: 10px 12px; font: inherit; outline: none; }
+  input:focus { border-color: #4d6a8f; }
+  #log { display: grid; gap: 2px; color: #8fa0b5; max-height: 40vh; overflow: auto; }
+  #log div:first-child { color: #d8dde6; }
+  #status { color: #e0b46c; min-height: 1.4em; }
+  [hidden] { display: none !important; }
+  label { color: #6f7b8c; display: block; margin-bottom: 6px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>cqs <span id="who">…</span></h1>
+  <div id="join" hidden>
+    <label for="name">Pick a name for your character and press Enter</label>
+    <input id="name" maxlength="16" autocomplete="off" placeholder="name">
+  </div>
+  <div id="play" hidden>
+    <input id="say" autocomplete="off" placeholder="what should your character do? — “walk to the forest, chop 10 wood, then bank it”">
+  </div>
+  <div id="status"></div>
+  <pre id="map"></pre>
+  <pre id="view"></pre>
+  <div id="log"></div>
+</main>
+<!-- The only JavaScript: load the wasm module. Everything else is Rust. -->
+<script type="module">
+  import init from "./pkg/web.js";
+  init();
+</script>
+</body>
+</html>
