@@ -7,6 +7,8 @@ the chain, run it forever. Found a place that yields anything you can name. Brin
 character into being with a persona and talk to them. A text adventure with a display
 instead of a paragraph, and with other people in it. Destined for **cqs.gg**.
 
+![the world, software-rendered in Rust](docs/screenshot.png)
+
 All Rust. The core crates have zero dependencies and compile for native and
 `wasm32-unknown-unknown`. The design, the lineage it comes from, the decisions and
 the milestones are in [docs/DESIGN.md](docs/DESIGN.md).
@@ -57,7 +59,10 @@ crates/
   world/    the simulation: map, places, NPCs, characters, tasks, plans, recipes, skills
     src/lib.rs     Command · plan/apply · step · describe (the text view) · ascii (the display)
     src/pilot.rs   system prompt, tool declarations, calls → Commands, the NPC voice, keyword fallback
+  host/     serves a realm behind a Ledger (memory for tests, Neon over HTTPS for Vercel)
+  web/      the browser client: draw.rs is the framebuffer renderer (tiles, figures, bitmap font)
   cqs/      the terminal game, with the clock on its own thread
+api/world.rs  the Vercel function
 docs/DESIGN.md
 ```
 

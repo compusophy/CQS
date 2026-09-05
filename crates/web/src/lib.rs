@@ -1,15 +1,26 @@
-//! The browser client. Rust all the way down to the DOM: the page has a name
-//! box, a prompt box, the map, the view and a log, and this crate wires them.
+//! The browser client. Rust all the way down to the pixels: the page has a
+//! name box, a prompt box, a canvas, the view and a log, and this crate wires
+//! them. The world is rasterized into a framebuffer by `draw` and presented
+//! whole with `putImageData`; the browser draws nothing itself.
 //!
 //! Identity, for now, is a random token in `localStorage` — enough to test a
 //! shared world with; a real login replaces it later without touching the
 //! server's idea of a player (a token is a token).
+//!
+//! `?demo` runs a local world in the tab with no server at all, which is how
+//! the renderer is looked at during development.
+
+mod draw;
+
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast;
+use wasm_bindgen::{Clamped, JsCast};
 use wasm_bindgen_futures::{spawn_local, JsFuture};
-use web_sys::{Document, HtmlInputElement, Window};
+use web_sys::{CanvasRenderingContext2d, Document, HtmlCanvasElement, HtmlInputElement, Window};
 
+use draw::{Frame, Scene, TILE};
 use gemini::{obj, Value};
 
 const API: &str = "/api/world";
@@ -30,6 +41,10 @@ fn window() -> Window {
 
 fn document() -> Document {
     window().document().expect("a document")
+}
+
+fn now() -> f64 {
+    window().performance().map(|p| p.now()).unwrap_or(0.0)
 }
 
 fn set_text(id: &str, text: &str) {
@@ -117,29 +132,108 @@ fn js_err(e: JsValue) -> String {
     e.as_string().unwrap_or_else(|| format!("{e:?}"))
 }
 
-fn render(v: &Value) {
-    if let Some(map) = v.get("map").as_str() {
-        set_text("map", map);
+// ---------------------------------------------------------------------------
+// The display: a framebuffer, two scenes to interpolate between, a clock
+// ---------------------------------------------------------------------------
+
+struct Display {
+    ctx: CanvasRenderingContext2d,
+    frame: Frame,
+    prev: Option<Scene>,
+    cur: Option<Scene>,
+    /// When `cur` arrived and how long to take walking from `prev` to it.
+    cur_at: f64,
+    span: f64,
+}
+
+type Shared = Rc<RefCell<Display>>;
+
+impl Display {
+    fn new() -> Result<Display, JsValue> {
+        let canvas: HtmlCanvasElement = document()
+            .get_element_by_id("screen")
+            .ok_or("no #screen canvas")?
+            .dyn_into()?;
+        let ctx: CanvasRenderingContext2d = canvas
+            .get_context("2d")?
+            .ok_or("no 2d context")?
+            .dyn_into()?;
+        let w = canvas.width() as i32;
+        let h = canvas.height() as i32;
+        Ok(Display {
+            ctx,
+            frame: Frame::new(w, h),
+            prev: None,
+            cur: None,
+            cur_at: 0.0,
+            span: 1000.0,
+        })
+    }
+
+    fn set_scene(&mut self, v: &Value) {
+        let Some(scene) = Scene::from_json(v) else {
+            return;
+        };
+        let t = now();
+        if let Some(cur) = self.cur.take() {
+            self.span = (t - self.cur_at).clamp(300.0, 3500.0);
+            self.prev = Some(cur);
+        }
+        self.cur = Some(scene);
+        self.cur_at = t;
+    }
+
+    fn render(&mut self, t: f64) {
+        let Some(cur) = &self.cur else { return };
+        let k = ((t - self.cur_at) / self.span).clamp(0.0, 1.0) as f32;
+        let want_w = cur.w * TILE;
+        let want_h = cur.h * TILE;
+        if self.frame.w != want_w || self.frame.h != want_h {
+            self.frame = Frame::new(want_w, want_h);
+            if let Ok(canvas) = self.ctx.canvas().ok_or(()) {
+                canvas.set_width(want_w as u32);
+                canvas.set_height(want_h as u32);
+            }
+        }
+        draw::draw(&mut self.frame, self.prev.as_ref(), cur, k, t);
+        if let Ok(data) = web_sys::ImageData::new_with_u8_clamped_array_and_sh(
+            Clamped(&self.frame.px),
+            self.frame.w as u32,
+            self.frame.h as u32,
+        ) {
+            let _ = self.ctx.put_image_data(&data, 0.0, 0.0);
+        }
+    }
+}
+
+fn start_render_loop(display: Shared) {
+    let f: Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>> = Rc::new(RefCell::new(None));
+    let g = f.clone();
+    *g.borrow_mut() = Some(Closure::new(move |t: f64| {
+        display.borrow_mut().render(t);
+        if let Some(cb) = f.borrow().as_ref() {
+            let _ = window().request_animation_frame(cb.as_ref().unchecked_ref());
+        }
+    }));
+    // A named borrow: a temporary here would outlive `g` as the tail expression.
+    let first = g.borrow();
+    if let Some(cb) = first.as_ref() {
+        let _ = window().request_animation_frame(cb.as_ref().unchecked_ref());
+    }
+}
+
+fn render_view(display: &Shared, v: &Value) {
+    let scene = v.get("scene");
+    if !scene.is_null() {
+        display.borrow_mut().set_scene(scene);
     }
     if let Some(view) = v.get("view").as_str() {
         set_text("view", view);
     }
-    if let Some(name) = v.get("name").as_str() {
-        set_text(
-            "who",
-            &format!(
-                "{name} · tick {}",
-                v.get("tick").as_f64().unwrap_or(0.0) as u64
-            ),
-        );
-    } else {
-        set_text(
-            "who",
-            &format!(
-                "watching · tick {}",
-                v.get("tick").as_f64().unwrap_or(0.0) as u64
-            ),
-        );
+    let tick = v.get("tick").as_f64().unwrap_or(0.0) as u64;
+    match v.get("name").as_str() {
+        Some(name) => set_text("who", &format!("{name} · tick {tick}")),
+        None => set_text("who", &format!("watching · tick {tick}")),
     }
     for line in v.get("said").as_arr() {
         if let Some(s) = line.as_str() {
@@ -156,7 +250,6 @@ fn log(line: &str) {
     if let Ok(p) = doc.create_element("div") {
         p.set_text_content(Some(line));
         let _ = el.insert_before(&p, el.first_child().as_ref());
-        // Keep the log short.
         while el.child_element_count() > 40 {
             if let Some(last) = el.last_element_child() {
                 last.remove();
@@ -165,7 +258,99 @@ fn log(line: &str) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Demo: a world in the tab, no server
+// ---------------------------------------------------------------------------
+
+fn run_demo(display: Shared) {
+    use world::{Command, World};
+    let mut w = World::new(7);
+    let me = w.join("You");
+    let ann = w.join("Ann");
+    let _ = w.plan(
+        ann,
+        vec![
+            Command::Gather {
+                resource: "wood".into(),
+                amount: Some(6),
+            },
+            Command::Bank,
+        ],
+    );
+    let _ = w.apply(
+        ann,
+        &Command::SaveRecipe {
+            name: "woodrun".into(),
+        },
+    );
+    let _ = w.apply(
+        ann,
+        &Command::RunRecipe {
+            name: "woodrun".into(),
+            forever: true,
+        },
+    );
+    let _ = w.plan(
+        me,
+        vec![
+            Command::Gather {
+                resource: "iron".into(),
+                amount: Some(5),
+            },
+            Command::Bank,
+        ],
+    );
+    let _ = w.apply(
+        me,
+        &Command::SaveRecipe {
+            name: "ironrun".into(),
+        },
+    );
+    let _ = w.apply(
+        me,
+        &Command::RunRecipe {
+            name: "ironrun".into(),
+            forever: true,
+        },
+    );
+    let _ = w.apply(
+        me,
+        &Command::CreateNpc {
+            name: "Wren".into(),
+            persona: "A forager who talks to birds.".into(),
+        },
+    );
+    show("join", false);
+    show("play", false);
+    set_text("status", "demo: a local world, no server");
+    let world = Rc::new(RefCell::new(w));
+    let tick = Closure::<dyn FnMut()>::new(move || {
+        let mut w = world.borrow_mut();
+        w.step();
+        let v = obj! {"scene" => w.scene(Some(me)), "view" => w.describe(me), "tick" => w.tick, "name" => "You"};
+        render_view(&display, &v);
+    });
+    let _ = window().set_interval_with_callback_and_timeout_and_arguments_0(
+        tick.as_ref().unchecked_ref(),
+        1000,
+    );
+    tick.forget();
+}
+
+// ---------------------------------------------------------------------------
+// The page
+// ---------------------------------------------------------------------------
+
 async fn main() -> Result<(), JsValue> {
+    let display: Shared = Rc::new(RefCell::new(Display::new()?));
+    start_render_loop(display.clone());
+
+    let query = window().location().search().unwrap_or_default();
+    if query.contains("demo") {
+        run_demo(display);
+        return Ok(());
+    }
+
     let token = match stored("cqs.token") {
         Some(t) => t,
         None => {
@@ -181,6 +366,7 @@ async fn main() -> Result<(), JsValue> {
     // Joining: a name, once.
     {
         let token = token.clone();
+        let display = display.clone();
         let on_join =
             Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |e: web_sys::KeyboardEvent| {
                 if e.key() != "Enter" {
@@ -192,6 +378,7 @@ async fn main() -> Result<(), JsValue> {
                     return;
                 }
                 let token = token.clone();
+                let display = display.clone();
                 spawn_local(async move {
                     set_text("status", "joining…");
                     match fetch_json(
@@ -209,7 +396,7 @@ async fn main() -> Result<(), JsValue> {
                             if let Some(ack) = v.get("ack").as_str() {
                                 log(ack);
                             }
-                            render(&v);
+                            render_view(&display, &v);
                             if let Some(f) = input("say") {
                                 let _ = f.focus();
                             }
@@ -232,6 +419,7 @@ async fn main() -> Result<(), JsValue> {
     // Speaking: a line, whenever.
     {
         let token = token.clone();
+        let display = display.clone();
         let on_say =
             Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |e: web_sys::KeyboardEvent| {
                 if e.key() != "Enter" {
@@ -245,6 +433,7 @@ async fn main() -> Result<(), JsValue> {
                 field.set_value("");
                 log(&format!("> {words}"));
                 let token = token.clone();
+                let display = display.clone();
                 spawn_local(async move {
                     set_text("status", "piloting…");
                     match fetch_json(
@@ -268,7 +457,7 @@ async fn main() -> Result<(), JsValue> {
                                     log(line);
                                 }
                             }
-                            render(&v);
+                            render_view(&display, &v);
                         }
                         Ok((401, _)) => {
                             // The server forgot us (a reset): join again.
@@ -295,7 +484,7 @@ async fn main() -> Result<(), JsValue> {
     loop {
         let url = format!("{API}?token={token}");
         match fetch_json("GET", &url, None).await {
-            Ok((200, v)) => render(&v),
+            Ok((200, v)) => render_view(&display, &v),
             Ok((_, v)) => set_text("status", v.get("error").as_str().unwrap_or("…")),
             Err(e) => set_text("status", &e),
         }

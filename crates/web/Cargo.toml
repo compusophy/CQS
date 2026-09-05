@@ -1,21 +1,23 @@
 [package]
 name = "web"
-description = "The cqs client for the browser: a prompt box and the world, driven from Rust through web-sys. The only JavaScript on the page is the wasm loader."
+description = "The cqs client for the browser: a prompt box and a software-rendered world, driven from Rust through web-sys. The only JavaScript on the page is the wasm loader."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 gemini = { path = "../gemini" }
+world = { path = "../world" }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 web-sys = { version = "0.3", features = [
   "Window", "Document", "Element", "HtmlElement", "HtmlInputElement", "Node",
   "Storage", "Crypto", "Event", "KeyboardEvent", "EventTarget", "console",
-  "Request", "RequestInit", "Response", "Headers",
+  "Request", "RequestInit", "Response", "Headers", "Location", "Performance",
+  "HtmlCanvasElement", "CanvasRenderingContext2d", "ImageData",
 ] }

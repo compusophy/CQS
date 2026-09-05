@@ -377,6 +377,7 @@ fn view_json(realm: &Realm, me: Option<PlayerId>) -> Value {
     let mut v = obj! {
         "tick" => w.tick,
         "map" => w.ascii(),
+        "scene" => w.scene(me),
         "players" => w.players.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
     };
     match me.and_then(|id| w.player(id)) {

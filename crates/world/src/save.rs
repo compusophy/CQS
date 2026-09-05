@@ -66,6 +66,45 @@ impl Task {
 }
 
 impl World {
+    /// What a display needs and nothing else: the tiles as glyph rows, and
+    /// every place, NPC and character with a position and what they are doing.
+    /// The renderer never sees text meant for the model.
+    pub fn scene(&self, me: Option<PlayerId>) -> Value {
+        let rows: Vec<String> = (0..H)
+            .map(|y| (0..W).map(|x| self.tile(x, y).glyph()).collect())
+            .collect();
+        let places: Vec<Value> = self
+            .places
+            .iter()
+            .map(|p| {
+                obj! {"name" => p.name.as_str(), "x" => p.x, "y" => p.y}
+                    .with_opt("resource", p.resource.as_deref())
+            })
+            .collect();
+        let npcs: Vec<Value> = self
+            .npcs
+            .iter()
+            .map(|n| obj! {"name" => n.name.as_str(), "x" => n.x, "y" => n.y})
+            .collect();
+        let players: Vec<Value> = self
+            .players
+            .iter()
+            .map(|p| {
+                let (doing, res) = match &p.task {
+                    Task::Idle => ("idle", None),
+                    Task::Walk { .. } => ("walk", None),
+                    Task::Gather { resource, .. } => ("gather", Some(resource.as_str())),
+                };
+                obj! {"name" => p.name.as_str(), "x" => p.x, "y" => p.y, "doing" => doing, "me" => Some(p.id) == me}
+                    .with_opt("resource", res)
+            })
+            .collect();
+        obj! {
+            "w" => W, "h" => H, "tick" => self.tick,
+            "tiles" => rows, "places" => places, "npcs" => npcs, "players" => players,
+        }
+    }
+
     pub fn to_json(&self) -> Value {
         let rows: Vec<String> = (0..H)
             .map(|y| (0..W).map(|x| self.tile(x, y).glyph()).collect())
