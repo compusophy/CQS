@@ -31,6 +31,14 @@ pub enum Kind {
         for_tick: u64,
         text: String,
     },
+    /// A player's standing script ran on a host: what it decided, what it
+    /// now remembers, and what it logged or how it failed.
+    Ran {
+        token: String,
+        cmds: Vec<Command>,
+        memory: Value,
+        note: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -66,6 +74,21 @@ impl Entry {
                 v.set("tick", *for_tick);
                 v.set("text", text.as_str());
             }
+            Kind::Ran {
+                token,
+                cmds,
+                memory,
+                note,
+            } => {
+                v.set("k", "ran");
+                v.set("token", token.as_str());
+                v.set(
+                    "cmds",
+                    cmds.iter().map(Command::to_json).collect::<Vec<_>>(),
+                );
+                v.set("memory", memory);
+                v.set("note", note.as_str());
+            }
         }
         v
     }
@@ -90,6 +113,17 @@ impl Entry {
                 npc: NpcId(v.get("npc").as_u32().ok_or("npc entry without an id")?),
                 for_tick: v.get("tick").as_f64().unwrap_or(0.0) as u64,
                 text: v.get("text").to_text(),
+            },
+            Some("ran") => Kind::Ran {
+                token: v.get("token").to_text(),
+                cmds: v
+                    .get("cmds")
+                    .as_arr()
+                    .iter()
+                    .map(Command::from_json)
+                    .collect::<Result<_, _>>()?,
+                memory: v.get("memory").clone(),
+                note: v.get("note").to_text(),
             },
             other => return Err(format!("unknown entry kind {other:?}")),
         };
@@ -116,6 +150,7 @@ impl Command {
                     .with_opt("skill", skill.as_deref())
             }
             Command::CreateNpc { name, persona } => obj! {"c" => "npc", "name" => name.as_str(), "persona" => persona.as_str()},
+            Command::SetScript { source } => obj! {"c" => "script", "source" => source.as_str()},
         }
     }
 
@@ -153,6 +188,9 @@ impl Command {
             Some("npc") => Command::CreateNpc {
                 name: text("name"),
                 persona: text("persona"),
+            },
+            Some("script") => Command::SetScript {
+                source: text("source"),
             },
             other => return Err(format!("unknown command {other:?}")),
         })
@@ -269,6 +307,16 @@ impl Realm {
                 self.world.npc_says(*npc, text);
                 self.world.answer_speech(*npc, *for_tick);
                 Ok(String::new())
+            }
+            Kind::Ran {
+                token,
+                cmds,
+                memory,
+                note,
+            } => {
+                let id = self.player(token).ok_or("unknown player")?;
+                self.world
+                    .script_ran(id, cmds.clone(), memory.clone(), note)
             }
         }
     }
@@ -532,5 +580,71 @@ mod tests {
             .unwrap()
             .bank
             .is_empty());
+    }
+}
+
+#[cfg(test)]
+mod script_entries {
+    use super::*;
+
+    #[test]
+    fn scripts_and_runs_round_trip_and_apply() {
+        let set = Command::SetScript {
+            source: "gather('wood', 1)".into(),
+        };
+        assert_eq!(Command::from_json(&set.to_json()).unwrap(), set);
+        let mut r = Realm::genesis(7, 0);
+        r.apply(&Entry {
+            at_ms: 0,
+            kind: Kind::Join {
+                token: "t1".into(),
+                name: "Ada".into(),
+            },
+        })
+        .unwrap();
+        let ack = r
+            .apply(&Entry {
+                at_ms: 0,
+                kind: Kind::Plan {
+                    token: "t1".into(),
+                    cmds: vec![set],
+                },
+            })
+            .unwrap();
+        assert!(ack.contains("sets a script"), "{ack}");
+        let ran = Entry {
+            at_ms: 1000,
+            kind: Kind::Ran {
+                token: "t1".into(),
+                cmds: vec![Command::Gather {
+                    resource: "wood".into(),
+                    amount: Some(1),
+                }],
+                memory: obj! {"n" => 1},
+                note: "run 1".into(),
+            },
+        };
+        assert_eq!(
+            Entry::from_json(&Value::parse(&ran.to_json().to_string()).unwrap()).unwrap(),
+            ran
+        );
+        assert!(r.apply(&ran).unwrap().contains("heads for Old Forest"));
+        let ada = r.player("t1").unwrap();
+        let p = r.world.player(ada).unwrap();
+        assert_eq!(p.memory.get("n").as_i64(), Some(1));
+        assert_eq!(p.script_tick, r.world.tick);
+        assert!(Realm::genesis(7, 0)
+            .world
+            .players
+            .iter()
+            .all(|q| q.script_tick == u64::MAX));
+        assert!(r.world.scripted_idle().is_empty());
+        assert!(r
+            .world
+            .events
+            .iter()
+            .any(|e| e.kind == "script" && e.text == "run 1"));
+        let back = Realm::from_json(&Value::parse(&r.to_json().to_string()).unwrap()).unwrap();
+        assert_eq!(back, r);
     }
 }

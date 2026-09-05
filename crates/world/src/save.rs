@@ -172,7 +172,7 @@ impl World {
             "place" => self.place_at(p.x, p.y).map(|pl| pl.name.clone()),
             "doing" => doing, "then" => then.join(", "),
             "carrying" => list(&p.inventory), "bank" => list(&p.bank),
-            "skills" => skills, "recipes" => recipes,
+            "skills" => skills, "recipes" => recipes, "script" => p.script.is_some(),
         }
     }
 
@@ -205,9 +205,11 @@ impl World {
                     "task" => p.task.to_json(),
                     "queue" => cmds(p.queue.iter().cloned().collect::<Vec<_>>().as_slice()),
                     "last_plan" => cmds(&p.last_plan),
+                    "memory" => p.memory.clone(), "script_tick" => p.script_tick,
                     "recipes" => p.recipes.iter().map(|(n, steps)| arr![n.as_str(), cmds(steps)]).collect::<Vec<_>>(),
                 }
                 .with_opt("looping", p.looping.as_ref().map(|(n, steps)| arr![n.as_str(), cmds(steps)]))
+                .with_opt("script", p.script.as_deref())
             })
             .collect();
         let skip = self.events.len().saturating_sub(EVENTS_KEPT);
@@ -318,6 +320,13 @@ impl World {
                         .iter()
                         .map(|r| Ok((r.at(0).to_text(), uncmds(r.at(1))?)))
                         .collect::<Result<Vec<_>, String>>()?,
+                    script: p.get("script").as_str().map(str::to_string),
+                    memory: p.get("memory").clone(),
+                    script_tick: p
+                        .get("script_tick")
+                        .as_f64()
+                        .map(|f| f as u64)
+                        .unwrap_or(u64::MAX),
                     looping: match p.get("looping") {
                         Value::Null => None,
                         l => Some((l.at(0).to_text(), uncmds(l.at(1))?)),
@@ -337,6 +346,7 @@ impl World {
                     Some("say") => "say",
                     Some("voice") => "voice",
                     Some("join") => "join",
+                    Some("script") => "script",
                     _ => "note",
                 },
             })

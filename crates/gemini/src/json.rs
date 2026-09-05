@@ -18,6 +18,12 @@ pub enum Value {
 
 static NULL: Value = Value::Null;
 
+impl Default for Value {
+    fn default() -> Value {
+        Value::Null
+    }
+}
+
 impl Value {
     pub fn obj() -> Value {
         Value::Obj(Vec::new())

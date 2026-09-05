@@ -1,6 +1,6 @@
 [package]
 name = "host"
-description = "Hosts a cqs realm behind a ledger: loads it, pilots prompts, answers NPCs, snapshots. The same host serves a serverless function, a server, or a test."
+description = "Hosts a cqs realm behind a ledger: loads it, pilots prompts, runs players' scripts, answers NPCs, snapshots. The same host serves a serverless function, a server, or a test."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,5 +9,6 @@ repository.workspace = true
 [dependencies]
 gemini = { path = "../gemini", features = ["native"] }
 world = { path = "../world" }
+script = { path = "../script" }
 # Plain HTTPS to the ledger store (Neon's SQL-over-HTTP endpoint). No client library.
 ureq = "3"

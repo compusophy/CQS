@@ -20,6 +20,8 @@ pub mod save;
 use std::collections::VecDeque;
 use std::fmt;
 
+use gemini::Value;
+
 pub const W: i32 = 32;
 pub const H: i32 = 32;
 
@@ -32,6 +34,8 @@ pub const NAME_MAX: usize = 24;
 pub const WORD_MAX: usize = 20;
 pub const TEXT_MAX: usize = 200;
 pub const PERSONA_MAX: usize = 300;
+/// A standing script is at most this many characters of Lua.
+pub const SCRIPT_MAX: usize = 6000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tile {
@@ -133,6 +137,13 @@ pub struct Player {
     pub recipes: Vec<(String, Vec<Command>)>,
     /// A recipe (name, steps) refilled into the queue whenever it runs dry.
     pub looping: Option<(String, Vec<Command>)>,
+    /// A standing Lua script that decides what to do when idle. The world
+    /// keeps it and its memory; a host runs it and reports back (`script_ran`).
+    pub script: Option<String>,
+    /// What the script remembers between runs, JSON-shaped.
+    pub memory: Value,
+    /// The tick the script last ran at, so one tick never runs it twice.
+    pub script_tick: u64,
 }
 
 impl Player {
@@ -190,6 +201,8 @@ pub enum Command {
     },
     /// Bring a character into the world where the player stands.
     CreateNpc { name: String, persona: String },
+    /// Set the standing Lua script; an empty source clears it.
+    SetScript { source: String },
 }
 
 impl Command {
@@ -240,6 +253,8 @@ impl fmt::Display for Command {
             } => write!(f, "run {name}"),
             Command::FoundPlace { name, .. } => write!(f, "found {name}"),
             Command::CreateNpc { name, .. } => write!(f, "create {name}"),
+            Command::SetScript { source } if source.trim().is_empty() => write!(f, "clear script"),
+            Command::SetScript { .. } => write!(f, "set script"),
         }
     }
 }
@@ -512,6 +527,9 @@ impl World {
             last_plan: Vec::new(),
             recipes: Vec::new(),
             looping: None,
+            script: None,
+            memory: Value::Null,
+            script_tick: u64::MAX,
         });
         self.note_kind("join", &name, "arrived in Town");
         id
@@ -599,6 +617,53 @@ impl World {
     pub fn answer_speech(&mut self, npc: NpcId, for_tick: u64) {
         self.speeches
             .retain(|s| !(s.listener == npc && s.tick == for_tick));
+    }
+
+    /// Players whose standing script should run now: idle, nothing queued,
+    /// no recipe on repeat, and not already run this tick.
+    pub fn scripted_idle(&self) -> Vec<PlayerId> {
+        self.players
+            .iter()
+            .filter(|p| {
+                p.script.is_some()
+                    && p.task == Task::Idle
+                    && p.queue.is_empty()
+                    && p.looping.is_none()
+                    && p.script_tick != self.tick
+            })
+            .map(|p| p.id)
+            .collect()
+    }
+
+    /// A script ran, outside the world, on a host: here is what it decided,
+    /// what it remembers, and anything it had to say about itself.
+    pub fn script_ran(
+        &mut self,
+        who: PlayerId,
+        cmds: Vec<Command>,
+        memory: Value,
+        note: &str,
+    ) -> Result<String, String> {
+        let name = self.name_of(who);
+        let tick = self.tick;
+        {
+            let me = self.player_mut(who).ok_or("no such player")?;
+            me.memory = memory;
+            me.script_tick = tick;
+        }
+        if !note.is_empty() {
+            self.note_kind("script", &name, tidy(note, TEXT_MAX));
+        }
+        if cmds.is_empty() {
+            Ok(String::new())
+        } else {
+            self.plan(who, cmds)
+        }
+    }
+
+    /// A line in the log from outside the world (a host, a script).
+    pub fn log_event(&mut self, kind: &'static str, name: &str, text: impl Into<String>) {
+        self.note_kind(kind, name, text);
     }
 
     fn note(&mut self, name: &str, text: impl Into<String>) {
@@ -822,7 +887,21 @@ impl World {
                     return Err("nothing to say".into());
                 }
                 self.note_kind("say", &name, format!("says \"{text}\""));
-                if let Some(n) = self.npcs.iter().find(|n| near(n.x, n.y, px, py)) {
+                // Within earshot (two tiles), the one addressed by name answers;
+                // otherwise whoever is nearest.
+                let lower = text.to_ascii_lowercase();
+                let mut heard: Vec<&Npc> = self
+                    .npcs
+                    .iter()
+                    .filter(|n| (n.x - px).abs() <= 2 && (n.y - py).abs() <= 2)
+                    .collect();
+                heard.sort_by_key(|n| (n.x - px).abs() + (n.y - py).abs());
+                let named = heard.iter().find(|n| {
+                    n.name
+                        .split_whitespace()
+                        .any(|w| w.len() >= 3 && lower.contains(&w.to_ascii_lowercase()))
+                });
+                if let Some(n) = named.or_else(|| heard.first()) {
                     let speech = Speech {
                         tick: self.tick,
                         speaker: who,
@@ -1017,6 +1096,24 @@ impl World {
                 });
                 self.note(&name, format!("brought {nname} into the world"));
                 Ok(format!("{nname} is here now, beside {name}."))
+            }
+            Command::SetScript { source } => {
+                let source = source.trim();
+                if source.chars().count() > SCRIPT_MAX {
+                    return Err(format!("a script is at most {SCRIPT_MAX} characters"));
+                }
+                let me = self.player_mut(who).unwrap();
+                me.memory = Value::Null;
+                if source.is_empty() {
+                    me.script = None;
+                    self.note_kind("script", &name, "cleared the script");
+                    return Ok(format!("{name} clears the script."));
+                }
+                let lines = source.lines().count();
+                me.script = Some(source.to_string());
+                me.script_tick = u64::MAX; // never run yet
+                self.note_kind("script", &name, format!("set a script of {lines} lines"));
+                Ok(format!("{name} sets a script ({lines} lines)."))
             }
         }
     }

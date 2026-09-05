@@ -146,6 +146,23 @@ impl Ledger for Neon {
         Ok(())
     }
 
+    fn since(&self, id: u64) -> Result<Vec<(u64, Entry)>, String> {
+        self.ensure_tables()?;
+        let rows = self.sql(
+            "select id, entry from ledger where id > $1 order by id",
+            vec![Value::from(id)],
+        )?;
+        rows.iter()
+            .map(|row| {
+                let e = Entry::from_json(
+                    &Value::parse(row.get("entry").as_str().unwrap_or("{}"))
+                        .map_err(|e| e.to_string())?,
+                )?;
+                Ok((u64_of(row.get("id"))?, e))
+            })
+            .collect()
+    }
+
     fn all(&self) -> Result<Vec<(u64, Entry)>, String> {
         self.ensure_tables()?;
         let rows = self.sql("select id, entry from ledger order by id", vec![])?;

@@ -2,13 +2,14 @@
 //!
 //! Nothing here is long-running. A request loads the latest snapshot and the
 //! entries after it, folds them, advances the world to now, does its work —
-//! joins a player, pilots their words into a plan, lets an NPC answer — and
-//! appends what happened to the ledger. If nobody else wrote in the meantime,
-//! it also stores a fresh snapshot so the next request folds less. Any
-//! snapshot is a valid prefix, so a stale one costs replay, never correctness.
+//! joins a player, pilots their words into a plan, runs idle players' Lua
+//! scripts, lets NPCs answer — and appends what happened to the ledger. If
+//! nobody else wrote in the meantime, it also stores a fresh snapshot so the
+//! next request folds less. Any snapshot is a valid prefix, so a stale one
+//! costs replay, never correctness; an unreadable one is replayed around.
 //!
-//! The store is behind `Ledger`, a three-method trait; `Memory` implements it
-//! for tests and `neon::Neon` over HTTPS for the deployment.
+//! The store is behind `Ledger`; `Memory` implements it for tests and
+//! `neon::Neon` over HTTPS for the deployment.
 
 pub mod neon;
 
@@ -18,12 +19,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use gemini::native::Client;
 use gemini::{obj, Value};
 use world::ledger::{Entry, Kind, Realm};
-use world::{pilot, Command, PlayerId};
+use world::{pilot, Command, NpcId, PlayerId};
 
 pub const TOKEN_MIN: usize = 8;
 pub const TOKEN_MAX: usize = 64;
 /// Voices answered per request, so a chatty crowd cannot stall a request.
 const VOICES_PER_REQUEST: usize = 2;
+/// Scripts run per request.
+const SCRIPTS_PER_REQUEST: usize = 6;
 
 /// Where entries go and come from. Ids are the store's own ordering.
 pub trait Ledger: Send + Sync {
@@ -36,6 +39,8 @@ pub trait Ledger: Send + Sync {
     fn snapshot(&self, last_id: u64, realm: &Value) -> Result<(), String>;
     /// Every entry ever, in order, with ids: the whole history, for replays and audits.
     fn all(&self) -> Result<Vec<(u64, Entry)>, String>;
+    /// Every entry after `id`, in order.
+    fn since(&self, id: u64) -> Result<Vec<(u64, Entry)>, String>;
 }
 
 /// An in-memory ledger, for tests and for a single-process server.
@@ -77,6 +82,9 @@ impl Ledger for Memory {
             .map(|(i, e)| (i as u64 + 1, e))
             .collect())
     }
+    fn since(&self, id: u64) -> Result<Vec<(u64, Entry)>, String> {
+        Ok(self.all()?.into_iter().filter(|(i, _)| *i > id).collect())
+    }
 }
 
 pub struct Reply {
@@ -112,6 +120,32 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// The API, for people and agents arriving cold: `GET /api/world?doc`.
+pub const DOC: &str = "\
+cqs — a shared world piloted by words. https://cqs.gg
+
+GET  /api/world?token=T       the world as T sees it (no token: a spectator)
+POST /api/world               body: {\"token\": T, \"name\": N?, \"words\": W?, \"cmds\": [..]?, \"script\": S?}
+  token   8-64 chars of [A-Za-z0-9_-], your secret; the same token is the same character
+  name    joins as N the first time a token is seen (2-16 chars)
+  words   what your character should do or say; a model turns it into steps
+  cmds    steps directly, no model: [{\"c\":\"move_to\",\"target\":\"Old Forest\"},{\"c\":\"gather\",\"resource\":\"wood\",\"amount\":10},{\"c\":\"bank\"}]
+          also {\"c\":\"say\",\"text\"} {\"c\":\"look\"} {\"c\":\"stop\"} {\"c\":\"save\",\"name\"} {\"c\":\"run\",\"name\",\"forever\"}
+          {\"c\":\"found\",\"name\",\"description\",\"resource\"?,\"skill\"?} {\"c\":\"npc\",\"name\",\"persona\"} {\"c\":\"script\",\"source\"}
+  script  a standing Lua script (empty string clears it); runs whenever your character is idle
+
+Reply: {tick, view (text, the same the pilot reads), status {name, place, doing, then, carrying, bank, skills, recipes, script},
+        scene {w, h, tiles, places, npcs, players, speech}, events [{tick, name, text, kind}], players, ack?, pilot?, ms?}
+
+Scripts see: me {name, x, y, place, doing, carrying, bank, skills}, places [{name, x, y, resource, distance}],
+  people [{name, x, y, npc, distance}], tick, memory (persists between runs).
+Scripts call: walk(target) gather(resource, amount?) bank() say(text) stop() found(name, description, resource?, skill?)
+  npc(name, persona) near(name) dist(name) log(text). A run gets 200k instructions and may issue 8 steps.
+
+The world ticks once a second while anyone is watching; steps run one after another; gathering trains a skill.
+Founded places and created people are for everyone. Nobody stands on anybody.
+";
+
 impl Host {
     /// Everything from the environment: `DATABASE_URL` (Neon), `GEMINI_API_KEY`,
     /// `GEMINI_MODEL`, `CQS_SEED`.
@@ -138,6 +172,12 @@ impl Host {
         let now = now_ms();
         match method {
             "GET" => {
+                if param(query, "doc").is_some() || query.split('&').any(|k| k == "doc") {
+                    return Reply {
+                        status: 200,
+                        body: obj! {"doc" => DOC},
+                    };
+                }
                 let token = param(query, "token");
                 self.get(token.as_deref(), now)
             }
@@ -202,10 +242,13 @@ impl Host {
     }
 
     /// Let NPCs answer what was said to them. Each answer is a ledger entry.
+    /// Two requests can see the same unanswered speech, so the ledger is
+    /// checked for an answer that landed since we loaded.
     fn voices(
         &self,
         realm: &mut Realm,
         now: u64,
+        loaded_last: u64,
         written: &mut Vec<u64>,
         limit: usize,
     ) -> Vec<String> {
@@ -213,8 +256,25 @@ impl Host {
             return Vec::new();
         };
         let pending: Vec<_> = realm.world.speeches().iter().take(limit).cloned().collect();
+        if pending.is_empty() {
+            return Vec::new();
+        }
+        let answered: Vec<(NpcId, u64)> = self
+            .ledger
+            .since(loaded_last)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(_, e)| match e.kind {
+                Kind::NpcSays { npc, for_tick, .. } => Some((npc, for_tick)),
+                _ => None,
+            })
+            .collect();
         let mut lines = Vec::new();
         for s in pending {
+            if answered.contains(&(s.listener, s.tick)) {
+                realm.world.answer_speech(s.listener, s.tick);
+                continue;
+            }
             let Some(npc) = realm.world.npc(s.listener).cloned() else {
                 continue;
             };
@@ -248,16 +308,86 @@ impl Host {
         lines
     }
 
+    /// Run the standing scripts of idle players. What a script decides goes
+    /// into the ledger as a `Ran` entry, so a replay never runs Lua.
+    fn scripts(&self, realm: &mut Realm, now: u64, written: &mut Vec<u64>) -> Vec<String> {
+        let mut lines = Vec::new();
+        for pid in realm
+            .world
+            .scripted_idle()
+            .into_iter()
+            .take(SCRIPTS_PER_REQUEST)
+        {
+            let (source, memory, name) = {
+                let Some(p) = realm.world.player(pid) else {
+                    continue;
+                };
+                let Some(src) = p.script.clone() else {
+                    continue;
+                };
+                (src, p.memory.clone(), p.name.clone())
+            };
+            let Some(token) = realm
+                .tokens
+                .iter()
+                .find(|(_, id)| *id == pid)
+                .map(|(t, _)| t.clone())
+            else {
+                continue;
+            };
+            let status = realm.world.status(pid);
+            let scene = realm.world.scene(Some(pid));
+            let out = script::run(&source, &status, &scene, &memory);
+            let note = match (&out.error, out.log.is_empty()) {
+                (Some(e), _) => format!("script error: {e}"),
+                (None, false) => out.log.join(" · "),
+                _ => String::new(),
+            };
+            if out.cmds.is_empty() && out.memory == memory && note.is_empty() {
+                // Nothing to record; the script simply chose to wait.
+                continue;
+            }
+            let e = Entry {
+                at_ms: now,
+                kind: Kind::Ran {
+                    token,
+                    cmds: out.cmds.clone(),
+                    memory: out.memory,
+                    note: note.clone(),
+                },
+            };
+            if let Ok((id, ack)) = self.commit(realm, &e) {
+                written.push(id);
+                let steps: Vec<String> = out.cmds.iter().map(|c| c.to_string()).collect();
+                lines.push(format!(
+                    "{name}'s script: {}{}",
+                    if steps.is_empty() {
+                        note.clone()
+                    } else {
+                        steps.join(" → ")
+                    },
+                    match ack {
+                        Ok(a) if !a.is_empty() => format!(" — {a}"),
+                        Err(e) => format!(" — x {e}"),
+                        _ => String::new(),
+                    }
+                ));
+            }
+        }
+        lines
+    }
+
     pub fn get(&self, token: Option<&str>, now: u64) -> Reply {
         let (mut realm, last) = match self.load(now) {
             Ok(x) => x,
             Err(e) => return Reply::bad(500, e),
         };
         let me = token.and_then(|t| realm.player(t));
-        // A poll may carry one pending voice, so NPCs answer even when the
-        // player who spoke has gone quiet.
         let mut written = Vec::new();
-        let said = self.voices(&mut realm, now, &mut written, 1);
+        // A poll carries one pending voice and runs due scripts, so the world
+        // keeps answering and acting for whoever is watching.
+        let mut said = self.voices(&mut realm, now, last, &mut written, 1);
+        said.extend(self.scripts(&mut realm, now, &mut written));
         self.maybe_snapshot(&realm, last, &written);
         let mut body = view_json(&realm, me);
         if !said.is_empty() {
@@ -284,6 +414,22 @@ impl Host {
             .filter(|s| !s.is_empty());
         let words = req.get("words").to_text();
         let words = words.trim();
+        let direct: Option<Vec<Command>> = if req.get("cmds").is_null() {
+            None
+        } else {
+            match req
+                .get("cmds")
+                .as_arr()
+                .iter()
+                .map(Command::from_json)
+                .collect::<Result<Vec<_>, _>>()
+            {
+                Ok(c) if !c.is_empty() => Some(c),
+                Ok(_) => return Reply::bad(400, "cmds is empty"),
+                Err(e) => return Reply::bad(400, format!("bad command: {e}")),
+            }
+        };
+        let script = req.get("script").as_str().map(str::to_string);
 
         let (mut realm, last) = match self.load(now) {
             Ok(x) => x,
@@ -324,6 +470,15 @@ impl Host {
 
         let mut piloted = String::new();
         let mut ms = 0u128;
+        // What to do, in order of directness: a script to set, steps given
+        // outright, or words for the pilot.
+        let mut plans: Vec<Vec<Command>> = Vec::new();
+        if let Some(source) = script {
+            plans.push(vec![Command::SetScript { source }]);
+        }
+        if let Some(cmds) = direct {
+            plans.push(cmds);
+        }
         if !words.is_empty() {
             let words: String = words.chars().take(500).collect();
             let view = realm.world.describe(me);
@@ -357,6 +512,9 @@ impl Host {
                 .map(|c| c.to_string())
                 .collect::<Vec<_>>()
                 .join(" → ");
+            plans.push(cmds);
+        }
+        for cmds in plans {
             let plan = Entry {
                 at_ms: now,
                 kind: Kind::Plan {
@@ -376,7 +534,8 @@ impl Host {
             }
         }
 
-        let said = self.voices(&mut realm, now, &mut written, VOICES_PER_REQUEST);
+        let mut said = self.voices(&mut realm, now, last, &mut written, VOICES_PER_REQUEST);
+        said.extend(self.scripts(&mut realm, now, &mut written));
         self.maybe_snapshot(&realm, last, &written);
 
         let mut body = view_json(&realm, Some(me));
@@ -392,20 +551,21 @@ impl Host {
 
 fn view_json(realm: &Realm, me: Option<PlayerId>) -> Value {
     let w = &realm.world;
+    let events: Vec<Value> = w
+        .events
+        .iter()
+        .rev()
+        .take(40)
+        .map(|e| obj! {"tick" => e.tick, "name" => e.name.as_str(), "text" => e.text.as_str(), "kind" => e.kind})
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
     let mut v = obj! {
         "tick" => w.tick,
         "map" => w.ascii(),
         "scene" => w.scene(me),
-        "events" => w
-            .events
-            .iter()
-            .rev()
-            .take(40)
-            .map(|e| obj! {"tick" => e.tick, "name" => e.name.as_str(), "text" => e.text.as_str(), "kind" => e.kind})
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<Vec<_>>(),
+        "events" => events,
         "players" => w.players.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
     };
     match me.and_then(|id| w.player(id)) {
@@ -514,6 +674,7 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("heads for Old Forest"));
+        assert_eq!(r.body.get("status").get("script").as_bool(), Some(false));
         // Same name, other token: refused, nothing written.
         let r = h.post(&obj! {"token" => "zzzzzzzz", "name" => "bea"}, t + 10);
         assert_eq!(r.status, 400);
@@ -522,6 +683,7 @@ mod tests {
         let view = r.body.get("view").as_str().unwrap();
         assert!(view.contains("Bank: 3 wood"), "{view}");
         assert!(r.body.get("map").as_str().unwrap().contains('B'));
+        assert!(!r.body.get("events").as_arr().is_empty());
         // A spectator sees the map and the log, not a character.
         let r = h.get(None, t + 120_000);
         assert!(r
@@ -538,6 +700,119 @@ mod tests {
         );
         assert_eq!(h.handle("PUT", "", "").status, 405);
         assert_eq!(h.handle("POST", "", "not json").status, 400);
+        assert!(h
+            .handle("GET", "doc", "")
+            .body
+            .get("doc")
+            .as_str()
+            .unwrap()
+            .contains("POST /api/world"));
+    }
+
+    #[test]
+    fn direct_commands_need_no_pilot() {
+        let h = host();
+        let t = 2_000_000u64;
+        let r = h.post(
+            &obj! {"token" => "agent-0001", "name" => "Bot", "cmds" => vec![
+                obj! {"c" => "gather", "resource" => "iron", "amount" => 2},
+                obj! {"c" => "bank"},
+            ]},
+            t,
+        );
+        assert_eq!(r.status, 200, "{}", r.body);
+        assert!(r
+            .body
+            .get("ack")
+            .as_str()
+            .unwrap()
+            .contains("heads for Iron Hill"));
+        assert_eq!(r.body.get("pilot").as_str(), Some(""));
+        let r = h.get(Some("agent-0001"), t + 90_000);
+        assert!(r
+            .body
+            .get("view")
+            .as_str()
+            .unwrap()
+            .contains("Bank: 2 iron"));
+        assert_eq!(
+            h.post(
+                &obj! {"token" => "agent-0001", "cmds" => vec![obj! {"c" => "fly"}]},
+                t
+            )
+            .status,
+            400
+        );
+    }
+
+    #[test]
+    fn a_standing_script_runs_when_idle_and_is_recorded() {
+        let h = host();
+        let t = 3_000_000u64;
+        let src = "memory.n = (memory.n or 0) + 1\nlog('run ' .. memory.n)\nif (me.bank.wood or 0) < 2 then gather('wood', 1) bank() else say('enough wood') end";
+        let r = h.post(
+            &obj! {"token" => "abcdefgh", "name" => "Bea", "script" => src},
+            t,
+        );
+        assert_eq!(r.status, 200, "{}", r.body);
+        assert!(r
+            .body
+            .get("ack")
+            .as_str()
+            .unwrap()
+            .contains("sets a script"));
+        assert_eq!(r.body.get("status").get("script").as_bool(), Some(true));
+        // The script ran at once (the character was idle) and chose to gather.
+        let said = r.body.get("said").as_arr();
+        assert!(
+            said.iter()
+                .any(|s| s.as_str().unwrap().contains("gather 1 wood")),
+            "{}",
+            r.body
+        );
+        // Polls keep it going: two rounds of wood, then it speaks.
+        let mut spoke = false;
+        for i in 1..=8 {
+            let r = h.get(Some("abcdefgh"), t + i * 40_000);
+            if r.body.get("view").as_str().unwrap().contains("enough wood") {
+                spoke = true;
+                break;
+            }
+        }
+        assert!(spoke, "the script never reached its goal");
+        // Its memory and runs are in the ledger, so a fresh fold agrees.
+        let all: Vec<Entry> = h
+            .ledger
+            .all()
+            .unwrap()
+            .into_iter()
+            .map(|(_, e)| e)
+            .collect();
+        assert!(all
+            .iter()
+            .any(|e| matches!(&e.kind, Kind::Ran { note, .. } if note.starts_with("run "))));
+        let folded = Realm::fold(7, &all, t + 9 * 40_000);
+        let bea = folded.player("abcdefgh").unwrap();
+        assert!(
+            folded
+                .world
+                .player(bea)
+                .unwrap()
+                .memory
+                .get("n")
+                .as_i64()
+                .unwrap()
+                >= 2
+        );
+        // Clearing.
+        let r = h.post(&obj! {"token" => "abcdefgh", "script" => ""}, t + 400_000);
+        assert!(r
+            .body
+            .get("ack")
+            .as_str()
+            .unwrap()
+            .contains("clears the script"));
+        assert_eq!(r.body.get("status").get("script").as_bool(), Some(false));
     }
 
     #[test]

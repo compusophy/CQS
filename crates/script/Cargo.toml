@@ -1,0 +1,12 @@
+[package]
+name = "script"
+description = "Lua for cqs: a player's standing script, run in a sandboxed, fuel-metered pure-Rust VM (piccolo), that decides what their character does next."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+piccolo = "0.3"
+gemini = { path = "../gemini" }
+world = { path = "../world" }

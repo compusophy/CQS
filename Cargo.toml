@@ -24,7 +24,7 @@ http-body-util = "0.1"
 
 [workspace]
 resolver = "2"
-members = ["crates/gemini", "crates/world", "crates/host", "crates/cqs", "crates/web"]
+members = ["crates/gemini", "crates/world", "crates/script", "crates/host", "crates/cqs", "crates/web"]
 
 [workspace.package]
 version = "0.1.0"
