@@ -36,6 +36,11 @@ pub const TEXT_MAX: usize = 200;
 pub const PERSONA_MAX: usize = 300;
 /// A standing script is at most this many characters of Lua.
 pub const SCRIPT_MAX: usize = 6000;
+/// An idle script runs again only after this many ticks, so a script that
+/// only talks or waits cannot fire every second.
+pub const SCRIPT_REST: u64 = 5;
+/// Saying the exact same line again within this many ticks is dropped.
+pub const SAY_REPEAT_TICKS: u64 = 30;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tile {
@@ -629,7 +634,7 @@ impl World {
                     && p.task == Task::Idle
                     && p.queue.is_empty()
                     && p.looping.is_none()
-                    && p.script_tick != self.tick
+                    && (p.script_tick == u64::MAX || self.tick >= p.script_tick + SCRIPT_REST)
             })
             .map(|p| p.id)
             .collect()
@@ -886,7 +891,17 @@ impl World {
                 if text.is_empty() {
                     return Err("nothing to say".into());
                 }
-                self.note_kind("say", &name, format!("says \"{text}\""));
+                let line = format!("says \"{text}\"");
+                let tick = self.tick;
+                if self.events.iter().rev().any(|e| {
+                    e.kind == "say"
+                        && e.name == name
+                        && e.text == line
+                        && e.tick + SAY_REPEAT_TICKS > tick
+                }) {
+                    return Ok(format!("{name} already said that."));
+                }
+                self.note_kind("say", &name, line);
                 // Within earshot (two tiles), the one addressed by name answers;
                 // otherwise whoever is nearest.
                 let lower = text.to_ascii_lowercase();
@@ -1787,5 +1802,64 @@ mod tests {
         assert_eq!(singular("fishes"), "fish");
         assert_eq!(singular("logs"), "log");
         assert_eq!(singular("moss"), "moss");
+    }
+
+    #[test]
+    fn repeating_a_line_is_dropped_and_scripts_rest_between_runs() {
+        let mut w = World::new(5);
+        let me = w.join("Ada");
+        let said = |w: &World| w.events.iter().filter(|e| e.kind == "say").count();
+        w.apply(
+            me,
+            &Command::Say {
+                text: "hello".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(said(&w), 1);
+        let r = w
+            .apply(
+                me,
+                &Command::Say {
+                    text: "hello".into(),
+                },
+            )
+            .unwrap();
+        assert!(r.contains("already said"), "{r}");
+        assert_eq!(said(&w), 1);
+        w.apply(
+            me,
+            &Command::Say {
+                text: "hello again".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(said(&w), 2);
+        for _ in 0..SAY_REPEAT_TICKS {
+            w.step();
+        }
+        w.apply(
+            me,
+            &Command::Say {
+                text: "hello".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(said(&w), 3, "after a while the same line is fine again");
+
+        w.apply(
+            me,
+            &Command::SetScript {
+                source: "say('hi')".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(w.scripted_idle(), vec![me], "a fresh script runs at once");
+        w.script_ran(me, vec![], Value::Null, "").unwrap();
+        assert!(w.scripted_idle().is_empty(), "and then it rests");
+        for _ in 0..SCRIPT_REST {
+            w.step();
+        }
+        assert_eq!(w.scripted_idle(), vec![me]);
     }
 }

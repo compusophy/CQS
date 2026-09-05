@@ -132,7 +132,7 @@ POST /api/world               body: {\"token\": T, \"name\": N?, \"words\": W?, 
   cmds    steps directly, no model: [{\"c\":\"move_to\",\"target\":\"Old Forest\"},{\"c\":\"gather\",\"resource\":\"wood\",\"amount\":10},{\"c\":\"bank\"}]
           also {\"c\":\"say\",\"text\"} {\"c\":\"look\"} {\"c\":\"stop\"} {\"c\":\"save\",\"name\"} {\"c\":\"run\",\"name\",\"forever\"}
           {\"c\":\"found\",\"name\",\"description\",\"resource\"?,\"skill\"?} {\"c\":\"npc\",\"name\",\"persona\"} {\"c\":\"script\",\"source\"}
-  script  a standing Lua script (empty string clears it); runs whenever your character is idle
+  script  a standing Lua script (empty string clears it); runs whenever your character is idle, at most once every five ticks
 
 Reply: {tick, view (text, the same the pilot reads), status {name, place, doing, then, carrying, bank, skills, recipes, script},
         scene {w, h, tiles, places, npcs, players, speech}, events [{tick, name, text, kind}], players, ack?, pilot?, ms?}
