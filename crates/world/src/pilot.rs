@@ -42,7 +42,7 @@ pub fn functions() -> Vec<Function> {
     };
     vec![
         Function::new("move_to", "Walk the character toward a place, a person, or a compass direction.").params(object(
-            obj! {"target" => string("A place or person named in the WORLD block, or north/south/east/west and diagonals.")},
+            obj! {"target" => string("A place or person named in the WORLD block, or a compass direction with an optional distance: \"south\", \"4 tiles south\", \"northeast\". One call walks the whole way.")},
             vec!["target"],
         )),
         Function::new("gather", "Go to the nearest source of a resource and gather it. Trains the matching skill.").params(object(

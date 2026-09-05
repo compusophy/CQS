@@ -326,6 +326,18 @@ const DIRS: [(&str, (i32, i32)); 8] = [
     ("southwest", (-1, 1)),
 ];
 
+/// "4", "four": how many tiles, when a direction comes with a distance.
+fn count_word(w: &str) -> Option<i32> {
+    if let Ok(n) = w.parse::<i32>() {
+        return Some(n);
+    }
+    let words = [
+        "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven",
+        "twelve",
+    ];
+    words.iter().position(|x| *x == w).map(|i| i as i32 + 1)
+}
+
 fn near(ax: i32, ay: i32, bx: i32, by: i32) -> bool {
     (ax - bx).abs() <= 1 && (ay - by).abs() <= 1
 }
@@ -622,6 +634,32 @@ impl World {
     pub fn answer_speech(&mut self, npc: NpcId, for_tick: u64) {
         self.speeches
             .retain(|s| !(s.listener == npc && s.tick == for_tick));
+    }
+
+    /// The nearest walkable tile to (x, y), within five tiles, that keeps at
+    /// least three tiles from every existing place: where a new place goes.
+    fn place_spot(&self, x: i32, y: i32) -> Option<(i32, i32)> {
+        let mut best: Option<((i32, i32), i32)> = None;
+        for dy in -5..=5i32 {
+            for dx in -5..=5i32 {
+                let (cx, cy) = (x + dx, y + dy);
+                if cx < 0 || cy < 0 || cx >= W || cy >= H || !self.tile(cx, cy).walkable() {
+                    continue;
+                }
+                if self
+                    .places
+                    .iter()
+                    .any(|p| (p.x - cx).abs() <= 2 && (p.y - cy).abs() <= 2)
+                {
+                    continue;
+                }
+                let d = dx.abs() + dy.abs();
+                if best.map_or(true, |(_, bd)| d < bd) {
+                    best = Some(((cx, cy), d));
+                }
+            }
+        }
+        best.map(|(at, _)| at)
     }
 
     /// Players whose standing script should run now: idle, nothing queued,
@@ -1026,16 +1064,11 @@ impl World {
                 {
                     return Err(format!("there is already a place called {pname}"));
                 }
-                if let Some(p) = self
-                    .places
-                    .iter()
-                    .find(|p| (p.x - px).abs() <= 2 && (p.y - py).abs() <= 2)
-                {
-                    return Err(format!(
-                        "too close to {}; walk a few tiles away first",
-                        p.name
-                    ));
-                }
+                // A place needs room. The world finds the nearest tile with
+                // room rather than sending the founder off to look for one.
+                let Some((sx, sy)) = self.place_spot(px, py) else {
+                    return Err("no room for a place here; everything nearby is taken".into());
+                };
                 let mine = self
                     .places
                     .iter()
@@ -1059,17 +1092,23 @@ impl World {
                 let description = tidy(description, TEXT_MAX);
                 self.places.push(Place {
                     name: pname.clone(),
-                    x: px,
-                    y: py,
+                    x: sx,
+                    y: sy,
                     resource: resource.clone(),
                     skill,
                     description,
                     founder: Some(who),
                 });
-                self.note(&name, format!("founded {pname}"));
+                let where_ = if (sx, sy) == (px, py) {
+                    String::new()
+                } else {
+                    let d = (sx - px).abs().max((sy - py).abs());
+                    format!(", {d} {}", compass(px, py, sx, sy))
+                };
+                self.note(&name, format!("founded {pname}{where_}"));
                 Ok(match resource {
-                    Some(r) => format!("{name} founds {pname}. It yields {r}."),
-                    None => format!("{name} founds {pname}."),
+                    Some(r) => format!("{name} founds {pname}{where_}. It yields {r}."),
+                    None => format!("{name} founds {pname}{where_}."),
                 })
             }
             Command::CreateNpc {
@@ -1157,7 +1196,21 @@ impl World {
             .trim_start_matches("to ")
             .trim_start_matches("the ")
             .trim();
-        let t = match t {
+        // "4 tiles south", "south 4", "four south": a count and a direction.
+        let mut count: Option<i32> = None;
+        let mut words: Vec<&str> = Vec::new();
+        for word in t.split_whitespace() {
+            if let Some(n) = count_word(word) {
+                count = Some(n);
+            } else if !matches!(
+                word,
+                "tiles" | "tile" | "steps" | "step" | "paces" | "squares" | "a" | "few"
+            ) {
+                words.push(word);
+            }
+        }
+        let t = words.join(" ");
+        let t = match t.as_str() {
             "n" => "north",
             "s" => "south",
             "e" => "east",
@@ -1175,7 +1228,8 @@ impl World {
             .iter()
             .find(|(n, _)| *n == t)
             .or_else(|| DIRS.iter().find(|(n, _)| n.starts_with(t)))?;
-        for step in (1..=5).rev() {
+        let most = count.unwrap_or(5).clamp(1, 12);
+        for step in (1..=most).rev() {
             let x = (from.0 + dx * step).clamp(0, W - 1);
             let y = (from.1 + dy * step).clamp(0, H - 1);
             if self.tile(x, y).walkable() {
@@ -1730,21 +1784,22 @@ mod tests {
             resource: Some("Mushrooms".into()),
             skill: Some("foraging".into()),
         };
-        assert!(w
-            .apply(me, &found)
-            .unwrap()
-            .starts_with("x too close to Town"));
+        // Town is right here; the world puts the hollow a few tiles off.
+        let r = w.apply(me, &found).unwrap();
+        assert!(
+            r.starts_with("Ada founds Damp Hollow, ") && r.contains("It yields mushrooms"),
+            "{r}"
+        );
         w.apply(
             me,
             &Command::MoveTo {
-                target: "east".into(),
+                target: "Damp Hollow".into(),
             },
         )
         .unwrap();
-        for _ in 0..10 {
+        for _ in 0..8 {
             w.step();
         }
-        assert!(w.apply(me, &found).unwrap().contains("founds Damp Hollow"));
         assert!(w
             .apply(me, &found)
             .unwrap()
@@ -1799,6 +1854,14 @@ mod tests {
         );
         assert!(w.resolve_target(me, "north").is_some());
         assert!(w.resolve_target(me, "nowhere").is_none());
+        let (x, y) = w.player(me).unwrap().pos();
+        assert_eq!(w.resolve_target(me, "2 tiles north").unwrap().0, (x, y - 2));
+        assert_eq!(w.resolve_target(me, "east 3").unwrap().0, (x + 3, y));
+        assert_eq!(w.resolve_target(me, "go four south").unwrap().0, (x, y + 4));
+        assert_eq!(
+            w.resolve_target(me, "one step west").unwrap().1,
+            "1 tiles west"
+        );
         assert_eq!(singular("fishes"), "fish");
         assert_eq!(singular("logs"), "log");
         assert_eq!(singular("moss"), "moss");
