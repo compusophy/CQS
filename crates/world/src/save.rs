@@ -303,7 +303,7 @@ mod tests {
     #[test]
     fn a_busy_world_survives_the_trip() {
         let mut w = World::new(11);
-        let me = w.join("Kyle");
+        let me = w.join("Ada");
         w.apply(
             me,
             &Command::CreateNpc {

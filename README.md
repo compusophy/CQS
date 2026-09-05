@@ -25,18 +25,18 @@ cargo run -p cqs -- --script "walk to the forest, chop 10 wood, then bank it" "s
 ```text
 > walk to the forest, chop 10 wood, then bank it
   pilot: go to Old Forest → gather 10 wood → bank  [702 ms, 1493 tokens]
-Kyle sets out for Old Forest.
+Wanderer sets out for Old Forest.
 > save this as woodrun
   pilot: save recipe woodrun
-Kyle saves recipe 'woodrun': go to Old Forest, gather 10 wood, bank.
+Wanderer saves recipe 'woodrun': go to Old Forest, gather 10 wood, bank.
 > keep doing my woodrun forever
   pilot: run woodrun forever
 > I found a damp hollow here full of mushrooms
   pilot: found Damp Hollow
-Kyle founds Damp Hollow. It yields mushrooms.
+Wanderer founds Damp Hollow. It yields mushrooms.
 > an old forager named Wren lives here and talks to birds
   pilot: create Wren
-Wren is here now, beside Kyle.
+Wren is here now, beside Wanderer.
 > wren, what do the birds say about the mine?
   pilot: say "Wren, what do the birds say about the mine?"
 Wren says "They say the iron sings at dusk, and that a pick answers it."

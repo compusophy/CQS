@@ -772,7 +772,7 @@ mod tests {
     #[test]
     fn a_scene_renders_without_panicking_and_paints_every_pixel() {
         let mut w = world::World::new(7);
-        let me = w.join("Kyle");
+        let me = w.join("Ada");
         w.apply(
             me,
             &world::Command::Gather {

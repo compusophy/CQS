@@ -1409,7 +1409,7 @@ mod tests {
     fn worlds_are_reproducible_and_places_are_reachable() {
         assert_eq!(World::new(7).ascii(), World::new(7).ascii());
         let mut w = World::new(7);
-        let me = w.join("Kyle");
+        let me = w.join("Ada");
         for pl in w.places.clone() {
             w.apply(
                 me,
@@ -1504,7 +1504,7 @@ mod tests {
     #[test]
     fn speech_near_an_npc_waits_for_a_voice_and_stop_keeps_the_rest_of_a_plan() {
         let mut w = World::new(5);
-        let me = w.join("Kyle");
+        let me = w.join("Ada");
         w.apply(
             me,
             &Command::CreateNpc {
@@ -1547,7 +1547,7 @@ mod tests {
     #[test]
     fn players_found_places_with_any_resource_and_create_npcs() {
         let mut w = World::new(5);
-        let me = w.join("Kyle");
+        let me = w.join("Ada");
         assert!(w
             .apply(me, &gather("mushrooms", None))
             .unwrap()
@@ -1612,7 +1612,7 @@ mod tests {
     #[test]
     fn targets_resolve_loosely() {
         let mut w = World::new(11);
-        let me = w.join("Kyle");
+        let me = w.join("Ada");
         assert_eq!(
             w.place("the forest").map(|p| p.name.as_str()),
             Some("Old Forest")

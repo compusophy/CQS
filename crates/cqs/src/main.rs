@@ -19,7 +19,7 @@ use world::{pilot, Command, World};
 fn main() {
     dotenv();
     let mut args = std::env::args().skip(1);
-    let mut name = "Kyle".to_string();
+    let mut name = "Wanderer".to_string();
     let mut seed = 7u64;
     let mut tps: Option<f64> = None;
     let mut offline = false;

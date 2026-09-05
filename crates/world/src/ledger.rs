@@ -398,7 +398,7 @@ mod tests {
             assert_eq!(&Command::from_json(&c.to_json()).unwrap(), c);
         }
         let entries = vec![
-            join("t1", 1000, "Kyle"),
+            join("t1", 1000, "Ada"),
             plan("t1", 2000, cmds),
             Entry {
                 at_ms: 3000,
@@ -418,7 +418,7 @@ mod tests {
     #[test]
     fn folding_is_deterministic_and_time_is_capped() {
         let entries = vec![
-            join("t1", 10_000, "Kyle"),
+            join("t1", 10_000, "Ada"),
             plan(
                 "t1",
                 12_000,
@@ -466,10 +466,10 @@ mod tests {
     #[test]
     fn joins_are_idempotent_and_names_unique() {
         let mut r = Realm::genesis(7, 0);
-        assert_eq!(r.apply(&join("t1", 0, "Kyle")).unwrap(), "Kyle");
-        assert_eq!(r.apply(&join("t1", 0, "Kyle")).unwrap(), "Kyle");
+        assert_eq!(r.apply(&join("t1", 0, "Ada")).unwrap(), "Ada");
+        assert_eq!(r.apply(&join("t1", 0, "Ada")).unwrap(), "Ada");
         assert!(r
-            .apply(&join("t2", 0, "kyle"))
+            .apply(&join("t2", 0, "ada"))
             .unwrap_err()
             .contains("taken"));
         assert!(r
@@ -484,7 +484,7 @@ mod tests {
     #[test]
     fn realm_snapshot_round_trips_mid_plan() {
         let entries = vec![
-            join("t1", 1000, "Kyle"),
+            join("t1", 1000, "Ada"),
             plan(
                 "t1",
                 2000,
