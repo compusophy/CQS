@@ -2,31 +2,30 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>cqs</title>
 <style>
   :root { color-scheme: dark; --ink: #d8dde6; --dim: #6f7b8c; --panel: #11151b; --line: #1f2733; }
-  html, body { margin: 0; height: 100%; background: #0b0d10; color: var(--ink); font: 14px/1.45 ui-monospace, Menlo, Consolas, monospace; }
-  main { height: 100vh; box-sizing: border-box; padding: 12px; display: grid; gap: 12px;
-         grid-template-columns: minmax(0, 1fr) minmax(320px, 420px); grid-template-rows: 1fr; }
-  /* The world: a square, as large as the shorter side allows, crisp. */
-  #stage { display: flex; align-items: center; justify-content: center; min-height: 0; }
-  #screen { width: min(100%, calc(100vh - 24px)); aspect-ratio: 1 / 1; background: #0d1a26; border-radius: 6px;
-            image-rendering: pixelated; image-rendering: crisp-edges; }
-  #side { display: grid; grid-template-rows: auto auto 1fr auto; gap: 10px; min-height: 0; }
-  /* The permanent header: your character, always. */
-  #hud { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; display: grid; gap: 3px; }
-  #hud .top { display: flex; justify-content: space-between; gap: 10px; }
+  html, body { margin: 0; height: 100%; background: #0b0d10; color: var(--ink); font: 14px/1.4 ui-monospace, Menlo, Consolas, monospace; }
+  /* A 9:16 column: the whole screen on a phone or a vertical stream, a
+     centred portrait on a desktop. The world is the square at the top,
+     edge to edge; everything you read is underneath it. */
+  main { width: min(100vw, calc(100vh * 9 / 16)); height: 100vh; margin: 0 auto; display: flex; flex-direction: column; background: #0b0d10; }
+  #screen { display: block; width: 100%; aspect-ratio: 1 / 1; background: #0d1a26; image-rendering: pixelated; image-rendering: crisp-edges; flex: none; }
+  #hud { flex: none; padding: 8px 12px 6px; border-bottom: 1px solid var(--line); display: grid; gap: 2px; }
+  #hud .top { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
   #who { font-weight: bold; letter-spacing: .04em; color: #fff2a8; }
-  #where { color: var(--dim); }
+  #where { color: var(--dim); font-size: 12.5px; }
   #doing { color: #c9d1dc; }
-  #holding, #skills, #recipes { color: var(--dim); font-size: 12.5px; }
+  #holding, #skills, #recipes { color: var(--dim); font-size: 12px; }
   #skills:empty, #recipes:empty { display: none; }
-  input { width: 100%; box-sizing: border-box; background: var(--panel); color: #eef2f7; border: 1px solid #263040; border-radius: 6px; padding: 10px 12px; font: inherit; outline: none; }
+  #entry { flex: none; padding: 8px 12px 0; }
+  input { width: 100%; box-sizing: border-box; background: var(--panel); color: #eef2f7; border: 1px solid #263040; border-radius: 6px; padding: 9px 12px; font: inherit; outline: none; }
   input:focus { border-color: #4d6a8f; }
-  label { color: var(--dim); display: block; margin-bottom: 6px; }
+  label { color: var(--dim); display: block; margin-bottom: 6px; font-size: 12.5px; }
+  #status { color: #e0b46c; min-height: 1.2em; font-size: 12px; padding: 3px 12px 0; flex: none; }
   /* The console: what happened, in order, newest at the bottom. */
-  #log { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; overflow-y: auto; min-height: 0; font-size: 13px; display: flex; flex-direction: column; gap: 2px; }
+  #log { flex: 1; min-height: 0; overflow-y: auto; padding: 6px 12px 10px; font-size: 13px; display: flex; flex-direction: column; gap: 2px; }
   .line { display: flex; gap: 8px; color: var(--dim); }
   .line .tick { color: #3f4a58; flex: none; width: 4.5ch; text-align: right; }
   .line.say, .line.voice { color: #eef2f7; }
@@ -37,39 +36,30 @@
   .line.pilot { color: #7fb7a0; }
   .line.ack { color: #c9d1dc; }
   .line.err { color: #e08c6c; }
-  #status { color: #e0b46c; min-height: 1.2em; font-size: 12.5px; }
   [hidden] { display: none !important; }
-  @media (max-width: 900px) {
-    main { grid-template-columns: 1fr; grid-template-rows: auto auto; height: auto; }
-    #screen { width: 100%; }
-    #log { max-height: 40vh; }
-  }
 </style>
 </head>
 <body>
 <main>
-  <section id="stage"><canvas id="screen" width="768" height="768"></canvas></section>
-  <aside id="side">
-    <div id="hud">
-      <div class="top"><span id="who">…</span><span id="where"></span></div>
-      <div id="doing"></div>
-      <div id="holding"></div>
-      <div id="skills"></div>
-      <div id="recipes"></div>
+  <canvas id="screen" width="768" height="768"></canvas>
+  <div id="hud">
+    <div class="top"><span id="who">…</span><span id="where"></span></div>
+    <div id="doing"></div>
+    <div id="holding"></div>
+    <div id="skills"></div>
+    <div id="recipes"></div>
+  </div>
+  <div id="entry">
+    <div id="join" hidden>
+      <label for="name">Pick a name for your character and press Enter</label>
+      <input id="name" maxlength="16" autocomplete="off" placeholder="name">
     </div>
-    <div>
-      <div id="join" hidden>
-        <label for="name">Pick a name for your character and press Enter</label>
-        <input id="name" maxlength="16" autocomplete="off" placeholder="name">
-      </div>
-      <div id="play" hidden>
-        <input id="say" autocomplete="off" placeholder="what should your character do or say?">
-      </div>
-      <div id="status"></div>
+    <div id="play" hidden>
+      <input id="say" autocomplete="off" placeholder="what should your character do or say?">
     </div>
-    <div id="log"></div>
-    <div style="color:#3f4a58;font-size:12px">cqs · the words are the controller</div>
-  </aside>
+  </div>
+  <div id="status"></div>
+  <div id="log"></div>
 </main>
 <!-- The only JavaScript: load the wasm module. Everything else is Rust. -->
 <script type="module">
