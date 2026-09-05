@@ -242,6 +242,7 @@ fn render_status(v: &Value) {
         set_text("holding", "");
         set_text("skills", "");
         set_text("recipes", "");
+        set_text("script", "");
         return;
     }
     set_text("who", s.get("name").as_str().unwrap_or(""));
@@ -310,6 +311,14 @@ fn render_status(v: &Value) {
             String::new()
         } else {
             format!("recipes: {}", recipes.join("; "))
+        },
+    );
+    set_text(
+        "script",
+        if s.get("script").as_bool().unwrap_or(false) {
+            "a standing script decides what to do when idle"
+        } else {
+            ""
         },
     );
 }
