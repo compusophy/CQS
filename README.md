@@ -63,7 +63,7 @@ docs/DESIGN.md
 
 ## Deploy
 
-**Live: https://cqs-rosy.vercel.app** (Vercel project `cqs`; point cqs.gg at it when ready).
+**Live: https://cqs.gg** (also https://cqs-rosy.vercel.app; Vercel project `cqs`, deployed from this repo on push).
 
 The game runs on Vercel as one Rust function plus a static wasm page, with the world
 in a Neon Postgres ledger (see the deployment section of `docs/DESIGN.md`).
