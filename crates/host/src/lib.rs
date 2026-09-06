@@ -134,6 +134,7 @@ POST /api/world               body: {\"token\": T, \"name\": N?, \"words\": W?, 
           {\"c\":\"found\",\"name\",\"description\",\"form\"?,\"style\"?,\"resource\"?,\"skill\"?} {\"c\":\"build\",\"site\"} {\"c\":\"abandon\",\"site\"}
           {\"c\":\"give\",\"item\",\"amount\"?,\"to\"} {\"c\":\"want\",\"npc\",\"item\",\"amount\",\"reward\":[[\"gold\",2]],\"repeat\",\"words\"}
           {\"c\":\"craft\",\"item\",\"description\",\"from\":[[\"iron\",2]]} (at a built building, from carried materials)
+          {\"c\":\"offer\",\"item\",\"amount\",\"reward\":[[\"gold\",1]],\"repeat\",\"words\"} (a shop: what you buy from other players and pay from your pack; amount 0 withdraws)
           {\"c\":\"npc_script\",\"npc\",\"source\"} (a standing Lua script for a character you made; walk(\"home\") returns them) {\"c\":\"npc\",\"name\",\"persona\"} {\"c\":\"script\",\"source\"}
           form: banner (a free spot) or a building — hut, house, hall, tower, spire, forge, mill, shrine, well — marked out with a bill of
           materials that must be CARRIED to the site; build walks there, hands over what is carried, and works until it stands

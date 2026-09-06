@@ -194,6 +194,11 @@ impl Command {
                 "repeat" => *repeat, "words" => words.as_str(),
             },
             Command::SetNpcScript { npc, source } => obj! {"c" => "npc_script", "npc" => npc.as_str(), "source" => source.as_str()},
+            Command::Offer { item, amount, reward, repeat, words } => obj! {
+                "c" => "offer", "item" => item.as_str(), "amount" => *amount,
+                "reward" => Value::Arr(reward.iter().map(|(r, n)| gemini::arr![r.as_str(), *n]).collect()),
+                "repeat" => *repeat, "words" => words.as_str(),
+            },
             Command::Craft { item, description, from } => obj! {
                 "c" => "craft", "item" => item.as_str(), "description" => description.as_str(),
                 "from" => Value::Arr(from.iter().map(|(r, n)| gemini::arr![r.as_str(), *n]).collect()),
@@ -255,6 +260,13 @@ impl Command {
                 npc: text("npc"),
                 item: text("item"),
                 amount: v.get("amount").as_u32().unwrap_or(1),
+                reward: pairs(v.get("reward")),
+                repeat: v.get("repeat").as_bool().unwrap_or(false),
+                words: text("words"),
+            },
+            Some("offer") => Command::Offer {
+                item: text("item"),
+                amount: v.get("amount").as_u32().unwrap_or(0),
                 reward: pairs(v.get("reward")),
                 repeat: v.get("repeat").as_bool().unwrap_or(false),
                 words: text("words"),
@@ -564,6 +576,13 @@ mod tests {
             Command::SetNpcScript {
                 npc: "Wren".into(),
                 source: "walk('home')".into(),
+            },
+            Command::Offer {
+                item: "wood".into(),
+                amount: 10,
+                reward: vec![("gold".into(), 1)],
+                repeat: true,
+                words: "w".into(),
             },
             Command::CreateNpc {
                 name: "Wren".into(),

@@ -283,9 +283,18 @@ fn render_status(v: &Value) {
             items.join(", ")
         }
     };
+    let offer = s
+        .get("offer")
+        .as_str()
+        .map(|o| format!(" · offering {o}"))
+        .unwrap_or_default();
     set_text(
         "holding",
-        &format!("carrying {} · bank {}", list("carrying"), list("bank")),
+        &format!(
+            "carrying {} · bank {}{offer}",
+            list("carrying"),
+            list("bank")
+        ),
     );
     let skills: Vec<String> = s
         .get("skills")

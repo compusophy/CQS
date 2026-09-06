@@ -238,6 +238,7 @@ impl World {
             "doing" => doing, "then" => then.join(", "),
             "carrying" => list(&p.inventory), "bank" => list(&p.bank),
             "skills" => skills, "recipes" => recipes, "script" => p.script.is_some(),
+            "offer" => p.want.as_ref().map(Want::text),
         }
     }
 
@@ -292,6 +293,7 @@ impl World {
                 }
                 .with_opt("looping", p.looping.as_ref().map(|(n, steps)| arr![n.as_str(), cmds(steps)]))
                 .with_opt("script", p.script.as_deref())
+                .with_opt("want", p.want.as_ref().map(want_json))
             })
             .collect();
         let skip = self.events.len().saturating_sub(EVENTS_KEPT);
@@ -431,6 +433,7 @@ impl World {
                         .as_f64()
                         .map(|f| f as u64)
                         .unwrap_or(u64::MAX),
+                    want: unwant(p.get("want"))?,
                     looping: match p.get("looping") {
                         Value::Null => None,
                         l => Some((l.at(0).to_text(), uncmds(l.at(1))?)),

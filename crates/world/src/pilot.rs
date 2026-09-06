@@ -29,6 +29,7 @@ How to pilot:
 - Players build this world. When the player invents, names, or establishes a location, call found_place with a vivid description drawn from their words and, if it can be worked, a resource word and the skill it trains — invent freely (\"mushrooms\"/\"foraging\", \"clay\"/\"digging\"). When they bring a person or creature into being, call create_npc with a persona: who they are, how they talk, what they know.
 - Buildings are real. found_place takes a form: banner for a mere spot (a camp, a clearing, a fishing hole — free and instant), or a building — hut, house, hall, tower, spire (a wizard's tower), forge, mill, shrine, well — which is marked out on the ground and must be supplied and built. A building's materials must be CARRIED to the site (not banked): gather them, then call build with the site's name; build also walks there, hands over what is carried, and works until it stands. Costs: BUILDING_COSTS. So \"make me a wizard's tower\" is found_place with form spire; \"build it\" or \"make a tower and build it\" is found_place, then gather each material it needs (amounts from the cost table, minus what is already carried), then build. Sites in the WORLD block show what they still need. abandon tears down a place the player founded. A style word (stone, timber, dark, white, red, blue, gold, mossy…) gives it a look.
 - Things change hands. give hands something carried to a person within two tiles (walk to them first). When the player sets up a trade, a bounty, a quest, or what one of their own characters wants — \"Nettle gives 2 gold for every 5 fish\", \"the goblin wants a sword\" — call npc_wants with the item, the amount, what is given back, and whether it repeats. When the player makes, forges, brews, carves, or crafts a thing, call craft with a name, a vivid description, and what it is made from (materials the character carries; it takes a built building to work at). Made things are carried like any resource and can be given or wanted.
+- A player can run a shop or post a bounty: offer sets what THEIR OWN character wants from other players and what it pays out of its own pack (\"I'll pay a gold for every 10 wood\", \"buying fish, 2 gold each\"); amount 0 withdraws it. Giving that thing to them pays automatically.
 - The player's own characters can live. npc_script gives one of them a standing Lua script with the same API as the player's (me, people, places, tick, memory; walk, say, give, log, near, dist — and walk('home') returns to where they were made). Use it when the player describes how a character behaves over time: \"Nettle wanders the bank and hails anyone carrying fish\", \"the goblin follows whoever has gold\", \"the guard paces between the gate and the well\". It runs every ten ticks while the character is idle; keep it under 30 lines and never announce the same line every run.
 - Talking, roleplay, greetings, questions to people nearby: call say with what the character says out loud, in character, briefly. To talk to someone far away, move_to them first, then say.
 - \"where am I\", \"what's here\": call look.
@@ -133,6 +134,20 @@ pub fn functions() -> Vec<Function> {
                 "from" => string("What it is made from, as goods: \"2 iron and 1 wood\"."),
             },
             vec!["item", "description", "from"],
+        )),
+        Function::new(
+            "offer",
+            "Set what the player's own character wants from other players and what it pays for it, out of its own pack: a shop or a bounty. Amount 0 withdraws it.",
+        )
+        .params(object(
+            obj! {
+                "item" => string("What the character buys (wood, fish, a made thing)."),
+                "amount" => obj! {"type" => "integer", "description" => "How many before it pays; 0 to withdraw the offer."},
+                "reward" => string("What it pays when met, as goods: \"1 gold\". Empty for nothing but thanks."),
+                "repeat" => obj! {"type" => "boolean", "description" => "true for a standing offer; false for once."},
+                "words" => string("The offer in the player's words."),
+            },
+            vec!["item", "amount", "reward"],
         )),
         Function::new(
             "npc_script",
@@ -325,6 +340,17 @@ pub fn command(name: &str, args: &Value) -> Result<Command, String> {
                 .unwrap_or(1),
             reward: goods(&text(args, "reward")),
             repeat: args.get("repeat").as_bool().unwrap_or(false),
+            words: text(args, "words"),
+        }),
+        "offer" => Ok(Command::Offer {
+            item: text(args, "item"),
+            amount: args
+                .get("amount")
+                .as_f64()
+                .map(|n| n.max(0.0) as u32)
+                .unwrap_or(0),
+            reward: goods(&text(args, "reward")),
+            repeat: args.get("repeat").as_bool().unwrap_or(true),
             words: text(args, "words"),
         }),
         "npc_script" => Ok(Command::SetNpcScript {
@@ -531,7 +557,7 @@ mod tests {
                 .get("functionDeclarations")
                 .as_arr()
                 .len(),
-            18
+            19
         );
         assert_eq!(
             b.get("generationConfig")

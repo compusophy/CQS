@@ -137,6 +137,15 @@ pub fn run(source: &str, status: &Value, scene: &Value, memory: &Value) -> Outco
                     from: world::goods(&arg_str(st, 2).unwrap_or_default()),
                 })
             });
+            command(ctx, "offer", cmds.clone(), |st| {
+                Ok(Command::Offer {
+                    item: arg_str(st, 0).unwrap_or_default(),
+                    amount: arg_int(st, 1).filter(|n| *n > 0).unwrap_or(0) as u32,
+                    reward: world::goods(&arg_str(st, 2).unwrap_or_default()),
+                    repeat: arg_bool(st, 3),
+                    words: arg_str(st, 4).unwrap_or_default(),
+                })
+            });
             command(ctx, "want", cmds.clone(), |st| {
                 Ok(Command::SetWant {
                     npc: arg_str(st, 0).ok_or("want needs an npc")?,

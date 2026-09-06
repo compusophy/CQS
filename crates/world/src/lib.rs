@@ -456,6 +456,8 @@ pub struct Player {
     pub memory: Value,
     /// The tick the script last ran at, so one tick never runs it twice.
     pub script_tick: u64,
+    /// A standing offer to other players: what this character buys and pays.
+    pub want: Option<Want>,
 }
 
 impl Player {
@@ -548,6 +550,15 @@ pub enum Command {
     },
     /// Give a character of one's own making a standing script; empty clears.
     SetNpcScript { npc: String, source: String },
+    /// A standing offer to other players: what this character buys, and what
+    /// it pays out of its own pack. Amount 0 withdraws it.
+    Offer {
+        item: String,
+        amount: u32,
+        reward: Vec<(String, u32)>,
+        repeat: bool,
+        words: String,
+    },
     /// Bring a character into the world where the player stands.
     CreateNpc { name: String, persona: String },
     /// Set the standing Lua script; an empty source clears it.
@@ -630,6 +641,8 @@ impl fmt::Display for Command {
                 write!(f, "clear {npc}'s script")
             }
             Command::SetNpcScript { npc, .. } => write!(f, "script for {npc}"),
+            Command::Offer { amount: 0, .. } => write!(f, "withdraw the offer"),
+            Command::Offer { item, amount, .. } => write!(f, "offer for {amount} {item}"),
             Command::CreateNpc { name, .. } => write!(f, "create {name}"),
             Command::SetScript { source } if source.trim().is_empty() => write!(f, "clear script"),
             Command::SetScript { .. } => write!(f, "set script"),
@@ -763,6 +776,18 @@ fn clean_word(s: &str) -> Result<String, String> {
         return Err(format!("'{s}' is not a resource word (lowercase letters)"));
     }
     Ok(s)
+}
+
+/// A day is 1200 ticks; the display darkens through the second half of it.
+pub fn time_of_day(tick: u64) -> &'static str {
+    match (tick % 1200) / 100 {
+        0..=1 => "dawn",
+        2..=4 => "morning",
+        5..=6 => "midday",
+        7..=8 => "afternoon",
+        9 => "dusk",
+        _ => "night",
+    }
 }
 
 /// "wren" names "Old Wren"; so does "old wren" and "Wren".
@@ -976,6 +1001,7 @@ impl World {
             script: None,
             memory: Value::Null,
             script_tick: u64::MAX,
+            want: None,
         });
         self.note_kind("join", &name, "arrived in Town");
         id
@@ -1817,10 +1843,65 @@ impl World {
                 take(&mut self.player_mut(who).unwrap().inventory, &key, n);
                 match someone {
                     Someone::Player(pid) => {
-                        let other = self.player_mut(pid).unwrap();
-                        add(&mut other.inventory, &key, n);
+                        let other = self.player(pid).unwrap().clone();
+                        // Their standing offer: what they pay when this fills it.
+                        let mut paid: Vec<(String, u32)> = Vec::new();
+                        let mut met = false;
+                        let mut want = other.want.clone();
+                        if let Some(w) = &mut want {
+                            if singular(&w.item) == singular(&key) {
+                                w.given += n;
+                                if w.given >= w.amount {
+                                    met = true;
+                                    paid = w.reward.clone();
+                                    if w.repeat {
+                                        w.given -= w.amount;
+                                    }
+                                }
+                            }
+                        }
+                        if met && paid.iter().any(|(r, k)| count(&other.inventory, r) < *k) {
+                            // They cannot pay: the goods go back, nothing changes.
+                            add(&mut self.player_mut(who).unwrap().inventory, &key, n);
+                            return Err(format!(
+                                "{} cannot pay for that right now (their offer pays {})",
+                                other.name,
+                                goods_text(&paid)
+                            ));
+                        }
+                        {
+                            let o = self.player_mut(pid).unwrap();
+                            add(&mut o.inventory, &key, n);
+                            for (r, k) in &paid {
+                                take(&mut o.inventory, r, *k);
+                            }
+                            o.want = if met && !want.as_ref().is_some_and(|w| w.repeat) {
+                                None
+                            } else {
+                                want
+                            };
+                        }
                         let oname = other.name.clone();
                         self.note_kind("give", &name, format!("gave {n} {key} to {oname}"));
+                        if met {
+                            let me = self.player_mut(who).unwrap();
+                            for (r, k) in &paid {
+                                add(&mut me.inventory, r, *k);
+                            }
+                            let what = if paid.is_empty() {
+                                "thanks".to_string()
+                            } else {
+                                goods_text(&paid)
+                            };
+                            self.note_kind(
+                                "give",
+                                &oname,
+                                format!("pays {name} {what} for the {key}"),
+                            );
+                            return Ok(format!(
+                                "{name} gives {n} {key} to {oname}. {oname} pays {name} {what}."
+                            ));
+                        }
                         Ok(format!("{name} gives {n} {key} to {oname}."))
                     }
                     Someone::Npc(id) => {
@@ -2010,6 +2091,36 @@ impl World {
                     format!("was given a script of {lines} lines"),
                 );
                 Ok(format!("{nname} has a script now ({lines} lines)."))
+            }
+            Command::Offer {
+                item,
+                amount,
+                reward,
+                repeat,
+                words,
+            } => {
+                if *amount == 0 || item.trim().is_empty() {
+                    self.player_mut(who).unwrap().want = None;
+                    self.note(&name, "withdrew the offer");
+                    return Ok(format!("{name} withdraws the offer."));
+                }
+                let item = clean_item(item)?;
+                let reward: Vec<(String, u32)> = reward
+                    .iter()
+                    .map(|(r, k)| Ok((clean_item(r)?, (*k).max(1))))
+                    .collect::<Result<_, String>>()?;
+                let w = Want {
+                    item,
+                    amount: *amount,
+                    given: 0,
+                    reward,
+                    repeat: *repeat,
+                    words: tidy(words, TEXT_MAX),
+                };
+                let text = w.text();
+                self.player_mut(who).unwrap().want = Some(w);
+                self.note(&name, format!("offers: {text}"));
+                Ok(format!("{name} now offers {text}."))
             }
             Command::CreateNpc {
                 name: nname,
@@ -2584,7 +2695,14 @@ impl World {
             } => format!("gathering {resource} ({got} so far, until stopped)"),
             Task::Build { site } => format!("building {site}"),
         };
-        s.push_str(&format!(" Tick {}. You are {doing}.\n", self.tick));
+        s.push_str(&format!(
+            " Tick {}, {}. You are {doing}.\n",
+            self.tick,
+            time_of_day(self.tick)
+        ));
+        if let Some(w) = &p.want {
+            s.push_str(&format!("Your offer: {}\n", w.text()));
+        }
         if !p.queue.is_empty() || p.looping.is_some() {
             let mut then: Vec<String> = p.queue.iter().map(|c| c.to_string()).collect();
             if let Some((rname, _)) = &p.looping {
@@ -2640,10 +2758,19 @@ impl World {
                     Task::Gather { resource, .. } => format!("gathering {resource}"),
                     Task::Build { site } => format!("building {site}"),
                 };
+                let offer = o
+                    .want
+                    .as_ref()
+                    .map(|w| format!("; wants {}", w.text()))
+                    .unwrap_or_default();
                 if d == 0 {
-                    format!("{} (here, {doing})", o.name)
+                    format!("{} (here, {doing}{offer})", o.name)
                 } else {
-                    format!("{} ({d} {}, {doing})", o.name, compass(p.x, p.y, o.x, o.y))
+                    format!(
+                        "{} ({d} {}, {doing}{offer})",
+                        o.name,
+                        compass(p.x, p.y, o.x, o.y)
+                    )
                 }
             })
             .collect();
@@ -3502,5 +3629,72 @@ mod tests {
         let back = World::from_json(&w.to_json()).unwrap();
         assert_eq!(back.npc(id).unwrap().script, w.npc(id).unwrap().script);
         assert_eq!(back.npc(id).unwrap().home, home);
+    }
+
+    #[test]
+    fn a_player_offer_is_a_shop_that_pays_or_refuses() {
+        let mut w = World::new(5);
+        let buyer = w.join("Ada");
+        let seller = w.join("Bea");
+        let (ax, ay) = w.player(buyer).unwrap().pos();
+        {
+            let b = w.player_mut(seller).unwrap();
+            b.x = ax + 1;
+            b.y = ay;
+            add(&mut b.inventory, "wood", 5);
+        }
+        let offer = Command::Offer {
+            item: "wood".into(),
+            amount: 4,
+            reward: vec![("gold".into(), 1)],
+            repeat: true,
+            words: "a coin for four logs".into(),
+        };
+        assert!(w
+            .apply(buyer, &offer)
+            .unwrap()
+            .contains("offers 4 wood for 1 gold"));
+        assert!(w
+            .describe(seller)
+            .contains("idle; wants 4 wood for 1 gold"));
+        assert!(w.describe(buyer).contains("Your offer: 4 wood"));
+        // Ada has no gold: the wood comes back and the gift is refused.
+        let give = Command::Give {
+            item: "wood".into(),
+            amount: Some(4),
+            to: "Ada".into(),
+        };
+        let r = w.apply(seller, &give).unwrap();
+        assert!(r.starts_with("x Ada cannot pay"), "{r}");
+        assert_eq!(count(&w.player(seller).unwrap().inventory, "wood"), 5);
+        // With a coin in her pack, she pays.
+        add(&mut w.player_mut(buyer).unwrap().inventory, "gold", 1);
+        let r = w.apply(seller, &give).unwrap();
+        assert!(r.contains("Ada pays Bea 1 gold"), "{r}");
+        assert_eq!(count(&w.player(seller).unwrap().inventory, "gold"), 1);
+        assert_eq!(count(&w.player(buyer).unwrap().inventory, "wood"), 4);
+        assert_eq!(count(&w.player(buyer).unwrap().inventory, "gold"), 0);
+        assert!(
+            w.player(buyer).unwrap().want.is_some(),
+            "a standing offer stays"
+        );
+        // Withdrawn.
+        w.apply(
+            buyer,
+            &Command::Offer {
+                item: String::new(),
+                amount: 0,
+                reward: vec![],
+                repeat: false,
+                words: String::new(),
+            },
+        )
+        .unwrap();
+        assert!(w.player(buyer).unwrap().want.is_none());
+        let back = World::from_json(&w.to_json()).unwrap();
+        assert_eq!(
+            back.player(seller).unwrap().inventory,
+            w.player(seller).unwrap().inventory
+        );
     }
 }
