@@ -304,8 +304,17 @@ impl Realm {
                 for_tick,
                 text,
             } => {
-                self.world.npc_says(*npc, text);
-                self.world.answer_speech(*npc, *for_tick);
+                // Two hosts can answer the same speech at once. The fold keeps
+                // the first answer and drops any other, so nobody says it twice.
+                let pending = self
+                    .world
+                    .speeches()
+                    .iter()
+                    .any(|s| s.listener == *npc && s.tick == *for_tick);
+                if pending {
+                    self.world.npc_says(*npc, text);
+                    self.world.answer_speech(*npc, *for_tick);
+                }
                 Ok(String::new())
             }
             Kind::Ran {
@@ -646,5 +655,48 @@ mod script_entries {
             .any(|e| e.kind == "script" && e.text == "run 1"));
         let back = Realm::from_json(&Value::parse(&r.to_json().to_string()).unwrap()).unwrap();
         assert_eq!(back, r);
+    }
+
+    #[test]
+    fn a_second_answer_to_the_same_speech_is_dropped() {
+        let mut r = Realm::genesis(5, 1_000);
+        let plan = |cmds: Vec<Command>| Entry {
+            at_ms: 1_000,
+            kind: Kind::Plan {
+                token: "t-ada-0001".into(),
+                cmds,
+            },
+        };
+        r.apply(&Entry {
+            at_ms: 1_000,
+            kind: Kind::Join {
+                token: "t-ada-0001".into(),
+                name: "Ada".into(),
+            },
+        })
+        .unwrap();
+        r.apply(&plan(vec![Command::CreateNpc {
+            name: "Old Wren".into(),
+            persona: "A forager.".into(),
+        }]))
+        .unwrap();
+        r.apply(&plan(vec![Command::Say {
+            text: "hello Wren".into(),
+        }]))
+        .unwrap();
+        let s = r.world.speeches()[0].clone();
+        let voice = |text: &str| Entry {
+            at_ms: 1_000,
+            kind: Kind::NpcSays {
+                npc: s.listener,
+                for_tick: s.tick,
+                text: text.into(),
+            },
+        };
+        r.apply(&voice("Hello yourself.")).unwrap();
+        r.apply(&voice("Hello again.")).unwrap();
+        let voices = r.world.events.iter().filter(|e| e.kind == "voice").count();
+        assert_eq!(voices, 1, "the second answer is dropped");
+        assert!(r.world.speeches().is_empty());
     }
 }
