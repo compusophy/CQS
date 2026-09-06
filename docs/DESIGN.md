@@ -373,3 +373,14 @@ and a reed marsh in the south — one more seeded place, `reeds/foraging`,
 because a marsh is the kind of place a player wants to found something
 at. `cargo run -p cqs --example map -- <seed>` prints a layout. NPCs with
 a want carry a quest marker in the display, so a trade finds you.
+
+## NPCs with lives (2026-09-05)
+
+A character someone made can be given a standing Lua script by its maker,
+with the same API a player's script has: `me`, `people`, `places`, `tick`,
+`memory`; `walk`, `say`, `give`, `log`, `near`, `dist`; and `walk("home")`
+to go back to where they were made. NPCs walk the same paths players do
+(around buildings, not through them), speak as voices, and hand over what
+they hold. The host runs an idle NPC's script every ten ticks and records
+what it decided as an `NpcRan` entry, so replay never runs Lua. "Nettle
+wanders the bank and hails anyone carrying fish" is now one sentence.

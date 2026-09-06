@@ -41,6 +41,8 @@ pub const SCRIPT_MAX: usize = 6000;
 pub const SCRIPT_REST: u64 = 5;
 /// Saying the exact same line again within this many ticks is dropped.
 pub const SAY_REPEAT_TICKS: u64 = 30;
+/// An idle NPC's script runs again only after this many ticks.
+pub const NPC_SCRIPT_REST: u64 = 10;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tile {
@@ -314,6 +316,13 @@ pub struct Npc {
     pub holds: Vec<(String, u32)>,
     /// What they are after, and what they give for it: a quest in one line.
     pub want: Option<Want>,
+    /// Where they were made; a script's walk("home") goes back there.
+    pub home: (i32, i32),
+    pub task: Task,
+    /// A standing script their maker gave them, run like a player's.
+    pub script: Option<String>,
+    pub memory: Value,
+    pub script_tick: u64,
 }
 
 /// What an NPC wants and what it hands back — set by whoever made them.
@@ -537,6 +546,8 @@ pub enum Command {
         description: String,
         from: Vec<(String, u32)>,
     },
+    /// Give a character of one's own making a standing script; empty clears.
+    SetNpcScript { npc: String, source: String },
     /// Bring a character into the world where the player stands.
     CreateNpc { name: String, persona: String },
     /// Set the standing Lua script; an empty source clears it.
@@ -615,6 +626,10 @@ impl fmt::Display for Command {
                 write!(f, "{npc} wants {amount} {item}")
             }
             Command::Craft { item, .. } => write!(f, "make {item}"),
+            Command::SetNpcScript { npc, source } if source.trim().is_empty() => {
+                write!(f, "clear {npc}'s script")
+            }
+            Command::SetNpcScript { npc, .. } => write!(f, "script for {npc}"),
             Command::CreateNpc { name, .. } => write!(f, "create {name}"),
             Command::SetScript { source } if source.trim().is_empty() => write!(f, "clear script"),
             Command::SetScript { .. } => write!(f, "set script"),
@@ -1963,6 +1978,39 @@ impl World {
                     shop.name
                 ))
             }
+            Command::SetNpcScript { npc, source } => {
+                let q = npc.trim().to_ascii_lowercase();
+                let id = self
+                    .npcs
+                    .iter()
+                    .find(|n| names_match(&n.name, &q))
+                    .map(|n| n.id)
+                    .ok_or_else(|| format!("there is nobody called '{npc}'"))?;
+                let source = source.trim();
+                if source.chars().count() > SCRIPT_MAX {
+                    return Err(format!("a script is at most {SCRIPT_MAX} characters"));
+                }
+                let n = self.npcs.iter_mut().find(|n| n.id == id).unwrap();
+                if n.creator != who {
+                    return Err(format!("{} is not {name}'s to direct", n.name));
+                }
+                let nname = n.name.clone();
+                n.memory = Value::Null;
+                n.script_tick = u64::MAX;
+                if source.is_empty() {
+                    n.script = None;
+                    self.note_kind("script", &nname, "has no script now");
+                    return Ok(format!("{nname} has no script now."));
+                }
+                let lines = source.lines().count();
+                n.script = Some(source.to_string());
+                self.note_kind(
+                    "script",
+                    &nname,
+                    format!("was given a script of {lines} lines"),
+                );
+                Ok(format!("{nname} has a script now ({lines} lines)."))
+            }
             Command::CreateNpc {
                 name: nname,
                 persona,
@@ -2001,6 +2049,11 @@ impl World {
                     creator: who,
                     holds: Vec::new(),
                     want: None,
+                    home: (nx, ny),
+                    task: Task::Idle,
+                    script: None,
+                    memory: Value::Null,
+                    script_tick: u64::MAX,
                 });
                 self.note(&name, format!("brought {nname} into the world"));
                 Ok(format!("{nname} is here now, beside {name}."))
@@ -2030,15 +2083,30 @@ impl World {
     /// back onto land). Returns the destination and how to name it.
     fn resolve_target(&self, who: PlayerId, target: &str) -> Option<((i32, i32), String)> {
         let from = self.player(who).map(|p| p.pos())?;
+        self.resolve_from(from, Some(who), None, target)
+    }
+
+    /// The same from anywhere, for NPCs, who are nobody's player.
+    fn resolve_from(
+        &self,
+        from: (i32, i32),
+        who: Option<PlayerId>,
+        me: Option<NpcId>,
+        target: &str,
+    ) -> Option<((i32, i32), String)> {
         // People by exact name first, so "Old Wren" is not "Old Forest".
         let q = target.trim().to_ascii_lowercase();
-        if let Some(n) = self.npcs.iter().find(|n| n.name.to_ascii_lowercase() == q) {
+        if let Some(n) = self
+            .npcs
+            .iter()
+            .find(|n| Some(n.id) != me && n.name.to_ascii_lowercase() == q)
+        {
             return Some(((n.x, n.y), n.name.clone()));
         }
         if let Some(p) = self
             .players
             .iter()
-            .find(|p| p.id != who && p.name.to_ascii_lowercase() == q)
+            .find(|p| Some(p.id) != who && p.name.to_ascii_lowercase() == q)
         {
             return Some(((p.x, p.y), p.name.clone()));
         }
@@ -2229,7 +2297,156 @@ impl World {
                 self.advance(id);
             }
         }
+        // NPCs on their way somewhere.
+        let nids: Vec<NpcId> = self.npcs.iter().map(|n| n.id).collect();
+        for nid in nids {
+            let n = self.npcs.iter().find(|n| n.id == nid).unwrap().clone();
+            let Task::Walk { to, .. } = n.task else {
+                continue;
+            };
+            let arrived =
+                (n.x, n.y) == to || (near(n.x, n.y, to.0, to.1) && self.occupied(to.0, to.1, None));
+            let next = if arrived {
+                None
+            } else {
+                self.path_step((n.x, n.y), to)
+            };
+            let npc = self.npcs.iter_mut().find(|n| n.id == nid).unwrap();
+            match next {
+                Some((x, y)) => {
+                    npc.x = x;
+                    npc.y = y;
+                }
+                None => npc.task = Task::Idle,
+            }
+        }
         self.hail();
+    }
+
+    /// NPCs whose script should run now: idle and rested.
+    pub fn npc_scripted_idle(&self) -> Vec<NpcId> {
+        self.npcs
+            .iter()
+            .filter(|n| {
+                n.script.is_some()
+                    && n.task == Task::Idle
+                    && (n.script_tick == u64::MAX || self.tick >= n.script_tick + NPC_SCRIPT_REST)
+            })
+            .map(|n| n.id)
+            .collect()
+    }
+
+    /// An NPC's script ran on a host: what it decided, what it remembers.
+    pub fn npc_ran(
+        &mut self,
+        id: NpcId,
+        cmds: Vec<Command>,
+        memory: Value,
+        note: &str,
+    ) -> Result<String, String> {
+        let tick = self.tick;
+        let name = {
+            let n = self
+                .npcs
+                .iter_mut()
+                .find(|n| n.id == id)
+                .ok_or("no such npc")?;
+            n.memory = memory;
+            n.script_tick = tick;
+            n.name.clone()
+        };
+        if !note.is_empty() {
+            self.note_kind("script", &name, tidy(note, TEXT_MAX));
+        }
+        let mut acks = Vec::new();
+        for c in &cmds {
+            match self.apply_npc(id, c) {
+                Ok(a) if !a.is_empty() => acks.push(a),
+                Ok(_) => {}
+                Err(e) => acks.push(format!("x {e}")),
+            }
+        }
+        Ok(acks.join("\n"))
+    }
+
+    /// What an NPC can do on its own: walk, speak, hand something over.
+    fn apply_npc(&mut self, id: NpcId, cmd: &Command) -> Result<String, String> {
+        let n = self
+            .npcs
+            .iter()
+            .find(|n| n.id == id)
+            .ok_or("no such npc")?
+            .clone();
+        match cmd {
+            Command::MoveTo { target } => {
+                let (to, label) = if target.trim().eq_ignore_ascii_case("home") {
+                    (n.home, "home".to_string())
+                } else {
+                    self.resolve_from((n.x, n.y), None, Some(id), target)
+                        .ok_or_else(|| format!("{} has nowhere called '{target}' to go", n.name))?
+                };
+                if to == (n.x, n.y) {
+                    return Ok(String::new());
+                }
+                let npc = self.npcs.iter_mut().find(|n| n.id == id).unwrap();
+                npc.task = Task::Walk { to, then: None };
+                Ok(format!("{} sets off for {label}.", n.name))
+            }
+            Command::Stop => {
+                let npc = self.npcs.iter_mut().find(|n| n.id == id).unwrap();
+                npc.task = Task::Idle;
+                Ok(String::new())
+            }
+            Command::Look => Ok(String::new()),
+            Command::Say { text } => {
+                let text = tidy(text, TEXT_MAX);
+                if text.is_empty() {
+                    return Err("nothing to say".into());
+                }
+                let line = format!("says \"{text}\"");
+                let tick = self.tick;
+                if self.events.iter().rev().any(|e| {
+                    e.kind == "voice"
+                        && e.name == n.name
+                        && e.text == line
+                        && e.tick + SAY_REPEAT_TICKS > tick
+                }) {
+                    return Ok(String::new());
+                }
+                self.note_kind("voice", &n.name, line);
+                Ok(format!("{} says \"{text}\"", n.name))
+            }
+            Command::Give { item, amount, to } => {
+                let item = clean_item(item)?;
+                let key = held_key(&n.holds, &item)
+                    .ok_or_else(|| format!("{} holds no {item}", n.name))?;
+                let have = count(&n.holds, &key);
+                let k = amount.unwrap_or(have).min(have);
+                if k == 0 {
+                    return Err(format!("{} has no {key} to give", n.name));
+                }
+                let q = to.trim().to_ascii_lowercase();
+                let pid = self
+                    .players
+                    .iter()
+                    .find(|p| {
+                        names_match(&p.name, &q) && (p.x - n.x).abs() <= 2 && (p.y - n.y).abs() <= 2
+                    })
+                    .map(|p| p.id)
+                    .ok_or_else(|| format!("{to} is not within {}'s reach", n.name))?;
+                take(
+                    &mut self.npcs.iter_mut().find(|n| n.id == id).unwrap().holds,
+                    &key,
+                    k,
+                );
+                let p = self.player_mut(pid).unwrap();
+                add(&mut p.inventory, &key, k);
+                let pname = p.name.clone();
+                self.note_kind("give", &n.name, format!("gave {k} {key} to {pname}"));
+                Ok(format!("{} gives {k} {key} to {pname}.", n.name))
+            }
+            other => Err(format!("{} cannot {other}", n.name)),
+        }
     }
 
     /// An NPC with a want calls out to whoever comes by carrying it: a cue
@@ -2440,6 +2657,9 @@ impl World {
             if let Some(w) = &n.want {
                 about.push_str(&format!("; wants {}", w.text()));
             }
+            if matches!(n.task, Task::Walk { .. }) {
+                about.push_str("; walking");
+            }
             if d <= 1 {
                 people.push(format!("{} (NPC, here{about})", n.name));
             } else {
@@ -2582,6 +2802,7 @@ fn compass(fx: i32, fy: i32, tx: i32, ty: i32) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gemini::obj;
 
     fn gather(r: &str, n: Option<u32>) -> Command {
         Command::Gather {
@@ -3175,5 +3396,112 @@ mod tests {
             goods("2 fish and a gold coin"),
             vec![("fish".to_string(), 2), ("gold coin".to_string(), 1)]
         );
+    }
+
+    #[test]
+    fn an_npc_with_a_script_walks_speaks_and_gives() {
+        let mut w = World::new(5);
+        let me = w.join("Ada");
+        w.apply(
+            me,
+            &Command::CreateNpc {
+                name: "Old Wren".into(),
+                persona: "A forager.".into(),
+            },
+        )
+        .unwrap();
+        let id = w.npcs[0].id;
+        let home = (w.npcs[0].x, w.npcs[0].y);
+        // Only her maker gives her a script.
+        let script = Command::SetNpcScript {
+            npc: "wren".into(),
+            source: "walk('3 tiles east')".into(),
+        };
+        let other = w.join("Bea");
+        assert!(w
+            .apply(other, &script)
+            .unwrap()
+            .starts_with("x Old Wren is not"));
+        assert!(w.apply(me, &script).unwrap().contains("has a script now"));
+        assert_eq!(w.npc_scripted_idle(), vec![id]);
+        // A run: she sets off, and walks there over the next ticks.
+        let r = w
+            .npc_ran(
+                id,
+                vec![Command::MoveTo {
+                    target: "3 tiles east".into(),
+                }],
+                Value::Null,
+                "",
+            )
+            .unwrap();
+        assert!(r.contains("sets off"), "{r}");
+        assert!(w.npc_scripted_idle().is_empty(), "walking, and just ran");
+        for _ in 0..6 {
+            w.step();
+        }
+        let n = w.npc(id).unwrap().clone();
+        assert_eq!(n.task, Task::Idle);
+        assert!(n.x > home.0, "moved east: {:?} from {home:?}", (n.x, n.y));
+        for _ in 0..NPC_SCRIPT_REST {
+            w.step();
+        }
+        assert_eq!(w.npc_scripted_idle(), vec![id], "rested, she runs again");
+        // Home is a place she knows; speech is a voice; giving needs someone near.
+        w.npc_ran(
+            id,
+            vec![
+                Command::Say {
+                    text: "Back to the well.".into(),
+                },
+                Command::MoveTo {
+                    target: "home".into(),
+                },
+            ],
+            obj! {"trips" => 1},
+            "log line",
+        )
+        .unwrap();
+        assert!(w
+            .events
+            .iter()
+            .any(|e| e.kind == "voice" && e.text.contains("Back to the well")));
+        assert!(w
+            .events
+            .iter()
+            .any(|e| e.kind == "script" && e.text == "log line"));
+        assert_eq!(w.npc(id).unwrap().memory.get("trips").as_u32(), Some(1));
+        for _ in 0..8 {
+            w.step();
+        }
+        assert_eq!((w.npc(id).unwrap().x, w.npc(id).unwrap().y), home);
+        add(
+            &mut w.npcs.iter_mut().find(|n| n.id == id).unwrap().holds,
+            "gold",
+            2,
+        );
+        {
+            let p = w.player_mut(me).unwrap();
+            p.x = home.0 + 1;
+            p.y = home.1;
+        }
+        let r = w
+            .npc_ran(
+                id,
+                vec![Command::Give {
+                    item: "gold".into(),
+                    amount: Some(1),
+                    to: "Ada".into(),
+                }],
+                Value::Null,
+                "",
+            )
+            .unwrap();
+        assert!(r.contains("gives 1 gold to Ada"), "{r}");
+        assert_eq!(count(&w.player(me).unwrap().inventory, "gold"), 1);
+        // A world with a walking, scripted NPC survives a save.
+        let back = World::from_json(&w.to_json()).unwrap();
+        assert_eq!(back.npc(id).unwrap().script, w.npc(id).unwrap().script);
+        assert_eq!(back.npc(id).unwrap().home, home);
     }
 }

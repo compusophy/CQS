@@ -324,6 +324,8 @@ fn me_table(status: &Value) -> Value {
         "bank" => map("bank"),
         "skills" => map("skills"),
         "recipes" => map("recipes"),
+        "home" => status.get("home").clone(),
+        "wants" => status.get("wants").clone(),
     }
 }
 
@@ -370,7 +372,11 @@ fn people_json(scene: &Value, me: &str, mx: i32, my: i32) -> Value {
             n.get("x").as_i64().unwrap_or(0) as i32,
             n.get("y").as_i64().unwrap_or(0) as i32,
         );
-        out.push(obj! {"name" => n.get("name").clone(), "x" => x, "y" => y, "npc" => true, "doing" => "idle", "distance" => chebyshev(mx, my, x, y)});
+        if n.get("name").as_str() == Some(me) {
+            continue;
+        }
+        let doing = n.get("doing").as_str().unwrap_or("idle");
+        out.push(obj! {"name" => n.get("name").clone(), "x" => x, "y" => y, "npc" => true, "doing" => doing, "wants" => n.get("wants").clone(), "distance" => chebyshev(mx, my, x, y)});
     }
     Value::Arr(out)
 }

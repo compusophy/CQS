@@ -133,7 +133,8 @@ POST /api/world               body: {\"token\": T, \"name\": N?, \"words\": W?, 
           also {\"c\":\"say\",\"text\"} {\"c\":\"look\"} {\"c\":\"stop\"} {\"c\":\"save\",\"name\"} {\"c\":\"run\",\"name\",\"forever\"}
           {\"c\":\"found\",\"name\",\"description\",\"form\"?,\"style\"?,\"resource\"?,\"skill\"?} {\"c\":\"build\",\"site\"} {\"c\":\"abandon\",\"site\"}
           {\"c\":\"give\",\"item\",\"amount\"?,\"to\"} {\"c\":\"want\",\"npc\",\"item\",\"amount\",\"reward\":[[\"gold\",2]],\"repeat\",\"words\"}
-          {\"c\":\"craft\",\"item\",\"description\",\"from\":[[\"iron\",2]]} (at a built building, from carried materials) {\"c\":\"npc\",\"name\",\"persona\"} {\"c\":\"script\",\"source\"}
+          {\"c\":\"craft\",\"item\",\"description\",\"from\":[[\"iron\",2]]} (at a built building, from carried materials)
+          {\"c\":\"npc_script\",\"npc\",\"source\"} (a standing Lua script for a character you made; walk(\"home\") returns them) {\"c\":\"npc\",\"name\",\"persona\"} {\"c\":\"script\",\"source\"}
           form: banner (a free spot) or a building — hut, house, hall, tower, spire, forge, mill, shrine, well — marked out with a bill of
           materials that must be CARRIED to the site; build walks there, hands over what is carried, and works until it stands
   script  a standing Lua script (empty string clears it); runs whenever your character is idle, at most once every five ticks
@@ -365,6 +366,58 @@ impl Host {
                 let steps: Vec<String> = out.cmds.iter().map(|c| c.to_string()).collect();
                 lines.push(format!(
                     "{name}'s script: {}{}",
+                    if steps.is_empty() {
+                        note.clone()
+                    } else {
+                        steps.join(" → ")
+                    },
+                    match ack {
+                        Ok(a) if !a.is_empty() => format!(" — {a}"),
+                        Err(e) => format!(" — x {e}"),
+                        _ => String::new(),
+                    }
+                ));
+            }
+        }
+        // NPCs with scripts of their own.
+        for nid in realm
+            .world
+            .npc_scripted_idle()
+            .into_iter()
+            .take(SCRIPTS_PER_REQUEST)
+        {
+            let Some(n) = realm.world.npc(nid).cloned() else {
+                continue;
+            };
+            let Some(src) = n.script.clone() else {
+                continue;
+            };
+            let status = realm.world.npc_status(nid);
+            let scene = realm.world.scene(None);
+            let out = script::run(&src, &status, &scene, &n.memory);
+            let note = match (&out.error, out.log.is_empty()) {
+                (Some(e), _) => format!("script error: {e}"),
+                (None, false) => out.log.join(" · "),
+                _ => String::new(),
+            };
+            if out.cmds.is_empty() && out.memory == n.memory && note.is_empty() {
+                continue;
+            }
+            let e = Entry {
+                at_ms: now,
+                kind: Kind::NpcRan {
+                    npc: nid,
+                    cmds: out.cmds.clone(),
+                    memory: out.memory,
+                    note: note.clone(),
+                },
+            };
+            if let Ok((id, ack)) = self.commit(realm, &e) {
+                written.push(id);
+                let steps: Vec<String> = out.cmds.iter().map(|c| c.to_string()).collect();
+                lines.push(format!(
+                    "{}'s script: {}{}",
+                    n.name,
                     if steps.is_empty() {
                         note.clone()
                     } else {

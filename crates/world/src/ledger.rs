@@ -39,6 +39,13 @@ pub enum Kind {
         memory: Value,
         note: String,
     },
+    /// An NPC's standing script ran on a host.
+    NpcRan {
+        npc: NpcId,
+        cmds: Vec<Command>,
+        memory: Value,
+        note: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -89,6 +96,21 @@ impl Entry {
                 v.set("memory", memory);
                 v.set("note", note.as_str());
             }
+            Kind::NpcRan {
+                npc,
+                cmds,
+                memory,
+                note,
+            } => {
+                v.set("k", "npc_ran");
+                v.set("npc", npc.0);
+                v.set(
+                    "cmds",
+                    cmds.iter().map(Command::to_json).collect::<Vec<_>>(),
+                );
+                v.set("memory", memory);
+                v.set("note", note.as_str());
+            }
         }
         v
     }
@@ -116,6 +138,17 @@ impl Entry {
             },
             Some("ran") => Kind::Ran {
                 token: v.get("token").to_text(),
+                cmds: v
+                    .get("cmds")
+                    .as_arr()
+                    .iter()
+                    .map(Command::from_json)
+                    .collect::<Result<_, _>>()?,
+                memory: v.get("memory").clone(),
+                note: v.get("note").to_text(),
+            },
+            Some("npc_ran") => Kind::NpcRan {
+                npc: NpcId(v.get("npc").as_u32().ok_or("npc_ran without an id")?),
                 cmds: v
                     .get("cmds")
                     .as_arr()
@@ -160,6 +193,7 @@ impl Command {
                 "reward" => Value::Arr(reward.iter().map(|(r, n)| gemini::arr![r.as_str(), *n]).collect()),
                 "repeat" => *repeat, "words" => words.as_str(),
             },
+            Command::SetNpcScript { npc, source } => obj! {"c" => "npc_script", "npc" => npc.as_str(), "source" => source.as_str()},
             Command::Craft { item, description, from } => obj! {
                 "c" => "craft", "item" => item.as_str(), "description" => description.as_str(),
                 "from" => Value::Arr(from.iter().map(|(r, n)| gemini::arr![r.as_str(), *n]).collect()),
@@ -224,6 +258,10 @@ impl Command {
                 reward: pairs(v.get("reward")),
                 repeat: v.get("repeat").as_bool().unwrap_or(false),
                 words: text("words"),
+            },
+            Some("npc_script") => Command::SetNpcScript {
+                npc: text("npc"),
+                source: text("source"),
             },
             Some("craft") => Command::Craft {
                 item: text("item"),
@@ -372,6 +410,12 @@ impl Realm {
                 self.world
                     .script_ran(id, cmds.clone(), memory.clone(), note)
             }
+            Kind::NpcRan {
+                npc,
+                cmds,
+                memory,
+                note,
+            } => self.world.npc_ran(*npc, cmds.clone(), memory.clone(), note),
         }
     }
 
@@ -516,6 +560,10 @@ mod tests {
                 item: "lantern".into(),
                 description: "d".into(),
                 from: vec![("fish".into(), 1), ("iron".into(), 2)],
+            },
+            Command::SetNpcScript {
+                npc: "Wren".into(),
+                source: "walk('home')".into(),
             },
             Command::CreateNpc {
                 name: "Wren".into(),

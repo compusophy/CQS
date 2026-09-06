@@ -125,7 +125,8 @@ impl World {
             .npcs
             .iter()
             .map(|n| {
-                obj! {"name" => n.name.as_str(), "x" => n.x, "y" => n.y, "holds" => list(&n.holds)}
+                let doing = if matches!(n.task, Task::Walk { .. }) { "walk" } else { "idle" };
+                obj! {"name" => n.name.as_str(), "x" => n.x, "y" => n.y, "holds" => list(&n.holds), "doing" => doing}
                     .with_opt("wants", n.want.as_ref().map(Want::text))
             })
             .collect();
@@ -164,6 +165,25 @@ impl World {
             "tiles" => rows, "places" => places, "npcs" => npcs, "players" => players,
             "speech" => speech,
         }
+    }
+
+    /// One NPC's standing, shaped like a player's, for the script that runs them.
+    pub fn npc_status(&self, id: NpcId) -> Value {
+        let Some(n) = self.npc(id) else {
+            return Value::Null;
+        };
+        let doing = match &n.task {
+            Task::Walk { to, .. } => format!("walking to {}", self.label(*to)),
+            _ => "idle".to_string(),
+        };
+        obj! {
+            "name" => n.name.as_str(), "x" => n.x, "y" => n.y,
+            "place" => self.place_at(n.x, n.y).map(|pl| pl.name.clone()),
+            "doing" => doing, "carrying" => list(&n.holds),
+            "bank" => Value::Arr(Vec::new()), "skills" => Value::Arr(Vec::new()), "recipes" => Value::Arr(Vec::new()),
+            "home" => arr![n.home.0, n.home.1],
+        }
+        .with_opt("wants", n.want.as_ref().map(Want::text))
     }
 
     /// One character's standing, as fields a header can lay out.
@@ -243,8 +263,13 @@ impl World {
             .npcs
             .iter()
             .map(|n| {
-                obj! {"id" => n.id.0, "name" => n.name.as_str(), "persona" => n.persona.as_str(), "x" => n.x, "y" => n.y, "creator" => n.creator.0, "holds" => list(&n.holds)}
-                    .with_opt("want", n.want.as_ref().map(want_json))
+                obj! {
+                    "id" => n.id.0, "name" => n.name.as_str(), "persona" => n.persona.as_str(), "x" => n.x, "y" => n.y,
+                    "creator" => n.creator.0, "holds" => list(&n.holds), "home" => arr![n.home.0, n.home.1],
+                    "task" => n.task.to_json(), "memory" => n.memory.clone(), "script_tick" => n.script_tick,
+                }
+                .with_opt("want", n.want.as_ref().map(want_json))
+                .with_opt("script", n.script.as_deref())
             })
             .collect();
         let items: Vec<Value> = self
@@ -359,6 +384,21 @@ impl World {
                     creator: PlayerId(n.get("creator").as_u32().unwrap_or(0)),
                     holds: unlist(n.get("holds"))?,
                     want: unwant(n.get("want"))?,
+                    home: match n.get("home") {
+                        Value::Null => (i32_of(n, "x")?, i32_of(n, "y")?),
+                        h => (
+                            h.at(0).as_i64().unwrap_or(0) as i32,
+                            h.at(1).as_i64().unwrap_or(0) as i32,
+                        ),
+                    },
+                    task: Task::from_json(n.get("task"))?,
+                    script: n.get("script").as_str().map(str::to_string),
+                    memory: n.get("memory").clone(),
+                    script_tick: n
+                        .get("script_tick")
+                        .as_f64()
+                        .map(|t| t as u64)
+                        .unwrap_or(u64::MAX),
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
