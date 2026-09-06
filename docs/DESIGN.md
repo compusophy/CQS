@@ -384,3 +384,14 @@ to go back to where they were made. NPCs walk the same paths players do
 they hold. The host runs an idle NPC's script every ten ticks and records
 what it decided as an `NpcRan` entry, so replay never runs Lua. "Nettle
 wanders the bank and hails anyone carrying fish" is now one sentence.
+
+## Offers (2026-09-05): players as shops
+
+The same `Want` an NPC carries can sit on a player: what their character
+buys from other players and what it pays out of its own pack. Giving that
+thing to them pays automatically; if they cannot pay, the goods come back
+and the gift is refused, so nobody is robbed by an empty shop. With NPC
+wants, this is the whole economy so far: bounties, trades, shops, all
+authored in a sentence, all settled by the world. The view also carries
+the time of day now (a day is 1200 ticks, and the display darkens through
+the second half of it), so voices and pilots know whether it is dusk.
