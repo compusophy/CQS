@@ -22,8 +22,8 @@ use std::fmt;
 
 use gemini::Value;
 
-pub const W: i32 = 32;
-pub const H: i32 = 32;
+pub const W: i32 = 48;
+pub const H: i32 = 48;
 
 /// Caps that keep one loud player from filling the world.
 pub const MAX_NPCS_PER_PLAYER: usize = 5;
@@ -780,13 +780,13 @@ impl World {
         let at = |x: i32, y: i32| (y * W + x) as usize;
 
         // A river down the left third, wandering one tile at a time.
-        let mut rx = 7 + rng.below(3);
+        let mut rx = 11 + rng.below(4);
         for y in 0..H {
             tiles[at(rx, y)] = Tile::Water;
             if rx + 1 < W && rng.below(3) == 0 {
                 tiles[at(rx + 1, y)] = Tile::Water;
             }
-            rx = (rx + rng.below(3) - 1).clamp(4, 11);
+            rx = (rx + rng.below(3) - 1).clamp(6, 17);
         }
         // A forest in the east, hills to the north, the town in the middle.
         let blob = |tiles: &mut Vec<Tile>, rng: &mut Rng, cx: i32, cy: i32, r: i32, t: Tile| {
@@ -799,19 +799,35 @@ impl World {
                 }
             }
         };
-        let forest = (24 + rng.below(3), 21 + rng.below(3));
-        let hill = (17 + rng.below(4), 5 + rng.below(2));
-        let quarry = (27 + rng.below(3), 5 + rng.below(2));
-        blob(&mut tiles, &mut rng, forest.0, forest.1, 5, Tile::Forest);
-        blob(&mut tiles, &mut rng, hill.0, hill.1, 4, Tile::Hill);
-        blob(&mut tiles, &mut rng, quarry.0, quarry.1, 2, Tile::Hill);
-        // A lake in the south-east and a pine stand in the north-west: scenery
-        // and room, not places — those are for players to found.
-        let lake = (26 + rng.below(3), 28 + rng.below(2));
-        let pines = (3 + rng.below(2), 4 + rng.below(3));
-        blob(&mut tiles, &mut rng, lake.0, lake.1, 3, Tile::Water);
-        blob(&mut tiles, &mut rng, pines.0, pines.1, 3, Tile::Forest);
-        let town = (16, 16);
+        let forest = (36 + rng.below(3), 31 + rng.below(3));
+        let hill = (26 + rng.below(4), 8 + rng.below(3));
+        let quarry = (41 + rng.below(3), 8 + rng.below(3));
+        blob(&mut tiles, &mut rng, forest.0, forest.1, 7, Tile::Forest);
+        blob(&mut tiles, &mut rng, hill.0, hill.1, 5, Tile::Hill);
+        blob(&mut tiles, &mut rng, quarry.0, quarry.1, 3, Tile::Hill);
+        // A lake in the south-east, a pine stand in the north-west, a wood
+        // across the river in the south-west, a ridge in the far north-east:
+        // scenery and room, not places — those are for players to found.
+        let lake = (39 + rng.below(3), 42 + rng.below(2));
+        let pines = (5 + rng.below(2), 6 + rng.below(3));
+        let southwood = (5 + rng.below(3), 40 + rng.below(3));
+        let ridge = (44 + rng.below(2), 20 + rng.below(4));
+        blob(&mut tiles, &mut rng, lake.0, lake.1, 4, Tile::Water);
+        blob(&mut tiles, &mut rng, pines.0, pines.1, 4, Tile::Forest);
+        blob(
+            &mut tiles,
+            &mut rng,
+            southwood.0,
+            southwood.1,
+            4,
+            Tile::Forest,
+        );
+        blob(&mut tiles, &mut rng, ridge.0, ridge.1, 3, Tile::Hill);
+        // Reeds where the lake drains south: a marsh, and the one seeded place
+        // that is not a resource node of the first four.
+        let marsh = (30 + rng.below(3), 43 + rng.below(2));
+        blob(&mut tiles, &mut rng, marsh.0 + 3, marsh.1, 2, Tile::Water);
+        let town = (24, 24);
         for y in town.1 - 1..=town.1 + 1 {
             for x in town.0 - 2..=town.0 + 2 {
                 tiles[at(x, y)] = Tile::Town;
@@ -834,7 +850,7 @@ impl World {
                 fishing = (x + 1, town.1);
             }
         }
-        let creek = (5, 26 + rng.below(3));
+        let creek = (7, 38 + rng.below(3));
         let seeded =
             |name: &str, (x, y): (i32, i32), res: Option<(&str, &str)>, desc: &str| Place {
                 name: name.into(),
@@ -885,6 +901,12 @@ impl World {
                 creek,
                 Some(("gold", "mining")),
                 "A thin creek on the far bank. Flecks in the pan.",
+            ),
+            seeded(
+                "Reed Marsh",
+                marsh,
+                Some(("reeds", "foraging")),
+                "Standing water and whispering reeds where the lake drains. Things live in there.",
             ),
         ];
         for p in &mut places {

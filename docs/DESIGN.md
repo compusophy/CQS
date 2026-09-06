@@ -363,3 +363,13 @@ Cues: a speech whose text starts with `*` is something done, not said
 ("*hands over 2 fish"); the voice prompt renders it as an action line. No
 new ledger kind was needed — a cue is a `Speech` and a reaction is an
 `NpcSays`, as before.
+
+## A bigger world (2026-09-05)
+
+With a window instead of a map, the world can be larger than the screen.
+It is 48×48 now: the same river, ford, hills, quarry and forest, plus a
+lake, a wood across the river with Gold Creek in it, a ridge in the east
+and a reed marsh in the south — one more seeded place, `reeds/foraging`,
+because a marsh is the kind of place a player wants to found something
+at. `cargo run -p cqs --example map -- <seed>` prints a layout. NPCs with
+a want carry a quest marker in the display, so a trade finds you.

@@ -83,6 +83,8 @@ pub struct Figure {
     pub resource: Option<String>,
     pub me: bool,
     pub npc: bool,
+    /// An NPC with a want: a quest marker over their head.
+    pub wants: bool,
 }
 
 /// Something said lately, to be drawn over whoever said it.
@@ -153,6 +155,7 @@ impl Scene {
                 resource: p.get("resource").as_str().map(str::to_string),
                 me: p.get("me").as_bool().unwrap_or(false),
                 npc: false,
+                wants: false,
             })
             .collect();
         figures.extend(v.get("npcs").as_arr().iter().map(|n| Figure {
@@ -163,6 +166,7 @@ impl Scene {
             resource: None,
             me: false,
             npc: true,
+            wants: n.get("wants").as_str().is_some(),
         }));
         let speech = v
             .get("speech")
@@ -564,6 +568,16 @@ pub fn draw(f: &mut Frame, prev: Option<&Scene>, cur: &Scene, t: f32, ms: f64) {
                     .unwrap_or(false)
                     && fig.doing == "walk";
                 let top = draw_figure(f, fig, px, py, moving, phase);
+                if fig.wants {
+                    // The quest marker: a bobbing "!" beside the head.
+                    let bob = ((phase * 3.0).sin() * 3.0) as i32;
+                    let (mx, my) = (px + TILE / 2 + 16, top - 4 + bob);
+                    f.shade_disc(mx + 1, my + 1, 8, 0x000000, 90);
+                    f.disc(mx, my, 8, 0x2a2416);
+                    f.disc(mx, my, 7, 0xffd23a);
+                    f.fill_rect(mx - 1, my - 5, 3, 6, 0x2a2416);
+                    f.fill_rect(mx - 1, my + 2, 3, 2, 0x2a2416);
+                }
                 heads.push((i, px + TILE / 2, top));
                 let ink = if fig.me {
                     0xfff2a8
