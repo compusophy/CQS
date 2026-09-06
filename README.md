@@ -45,7 +45,8 @@ Wren says "They say the iron sings at dusk, and that a pick answers it."
 At the prompt, `/look` redraws and `/quit` leaves; everything else is said to your
 character.
 
-Say "whenever I have 20 wood, bank it" and the pilot writes a **Lua script** for your
+Say "make me a wizard's tower" and the world marks out a site with a bill of materials; gather
+the stone, carry it there, and **build**, and a spire rises behind a scaffold. Say "whenever I have 20 wood, bank it" and the pilot writes a **Lua script** for your
 character that runs whenever it is idle, in a sandboxed, fuel-metered pure-Rust VM
 (piccolo). Agents can play over the API with no model at all: `GET /api/world?doc`.
 

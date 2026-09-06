@@ -302,3 +302,40 @@ Not GitHub: persistence is the Neon ledger, and in-game programs (scripts, later
 NPC behaviour and display programs) are ledger data, not repo files. Writing
 the repo from inside the game would only matter for a vanish-style loop that
 rewrites the Rust, and Vercel's git deploy already turns a commit into a build.
+
+## Buildings and a camera (2026-09-05): taking more from Tiny Empires
+
+Kyle said "make a wizard's tower" and got a flag with the words on it, on a
+map that showed the whole world at once. Both were the same mistake: the
+world had places but no things, and the display had a map but no window.
+
+**Forms.** A place now has a form. `banner` is the old spot — free, instant,
+a name on the ground. The rest are buildings: hut, house, hall, tower, spire
+(the wizard's tower), forge, mill, shrine, well. A building has a footprint
+nobody walks through (paths go around it, the founder steps off it, its door
+is the tile below its front), a bill of materials in resources the seeded
+world yields, and ticks of work. Founding marks the site out and says what it
+needs; `build` walks there, hands over what is carried, and works until it
+stands. Materials must be *carried*, not banked, so a tower is a trip: gather
+40 stone, carry it to the site, build. The pilot's system prompt carries the
+cost table so one sentence can become found → gather → build.
+
+**The window.** The client is a sixteen-tile square at 48 px a tile that
+follows your character (a spectator watches Town), with a minimap in the
+corner. This is Tiny Empires' field, not its overworld: you see the place
+you are in, and the map is something you consult.
+
+**The art.** `crates/web/src/arch.rs` draws buildings the way Tiny Empires'
+`architecture.rs` does — walls with courses on a plinth, a shingled roof with
+a sunlit pitch and a shaded one, a lit doorway — and gives each form a mark
+outside the shell (a shaft with an orb, a stack, sails, a yard), because two
+buildings that share a silhouette are one building at reading distance. A
+style word chooses the materials: stone, dark (iron teeth on the ridge, like
+the Horde's keeps), white, red, blue, gold, mossy, purple, timber, or any
+other word for a roof colour of its own. A site waiting for materials is
+stakes and rope with a signboard; a site being built rises out of the ground
+behind a scaffold, clipped at how much of it stands.
+
+Not lifted, on purpose: Tiny Empires' factions, combat, and training. cqs
+has one civilisation and the difference between buildings is who founded
+them and what they said.
