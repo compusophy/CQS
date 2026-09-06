@@ -123,6 +123,30 @@ pub fn run(source: &str, status: &Value, scene: &Value, memory: &Value) -> Outco
                     site: arg_str(st, 0).ok_or("abandon needs a site")?,
                 })
             });
+            command(ctx, "give", cmds.clone(), |st| {
+                Ok(Command::Give {
+                    item: arg_str(st, 0).ok_or("give needs an item")?,
+                    amount: arg_int(st, 1).filter(|n| *n > 0).map(|n| n as u32),
+                    to: arg_str(st, 2).ok_or("give needs someone to give to")?,
+                })
+            });
+            command(ctx, "craft", cmds.clone(), |st| {
+                Ok(Command::Craft {
+                    item: arg_str(st, 0).ok_or("craft needs a name")?,
+                    description: arg_str(st, 1).unwrap_or_default(),
+                    from: world::goods(&arg_str(st, 2).unwrap_or_default()),
+                })
+            });
+            command(ctx, "want", cmds.clone(), |st| {
+                Ok(Command::SetWant {
+                    npc: arg_str(st, 0).ok_or("want needs an npc")?,
+                    item: arg_str(st, 1).ok_or("want needs an item")?,
+                    amount: arg_int(st, 2).filter(|n| *n > 0).unwrap_or(1) as u32,
+                    reward: world::goods(&arg_str(st, 3).unwrap_or_default()),
+                    repeat: arg_bool(st, 4),
+                    words: arg_str(st, 5).unwrap_or_default(),
+                })
+            });
             command(ctx, "npc", cmds.clone(), |st| {
                 Ok(Command::CreateNpc {
                     name: arg_str(st, 0).ok_or("npc needs a name")?,
@@ -269,6 +293,15 @@ fn arg_int(stack: &Stack<'_, '_>, i: usize) -> Option<i64> {
         Lv::Number(f) => Some(f as i64),
         Lv::String(s) => s.to_str().ok()?.trim().parse().ok(),
         _ => None,
+    }
+}
+
+fn arg_bool(stack: &Stack<'_, '_>, i: usize) -> bool {
+    match stack.get(i) {
+        Lv::Boolean(b) => b,
+        Lv::Integer(n) => n != 0,
+        Lv::String(s) => matches!(s.to_str().ok().map(str::trim), Some("true" | "yes" | "1")),
+        _ => false,
     }
 }
 

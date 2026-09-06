@@ -310,6 +310,96 @@ pub struct Npc {
     pub x: i32,
     pub y: i32,
     pub creator: PlayerId,
+    /// What people have handed them.
+    pub holds: Vec<(String, u32)>,
+    /// What they are after, and what they give for it: a quest in one line.
+    pub want: Option<Want>,
+}
+
+/// What an NPC wants and what it hands back — set by whoever made them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Want {
+    pub item: String,
+    pub amount: u32,
+    /// Handed over so far toward `amount`.
+    pub given: u32,
+    pub reward: Vec<(String, u32)>,
+    /// A standing trade: met, it resets, rather than ending.
+    pub repeat: bool,
+    /// How its maker put the deal, for the voice.
+    pub words: String,
+}
+
+impl Want {
+    pub fn text(&self) -> String {
+        let reward = if self.reward.is_empty() {
+            "nothing but thanks".to_string()
+        } else {
+            goods_text(&self.reward)
+        };
+        format!(
+            "{} {} for {reward} ({}/{}{})",
+            self.amount,
+            self.item,
+            self.given,
+            self.amount,
+            if self.repeat { ", standing" } else { "" }
+        )
+    }
+}
+
+/// A thing somebody made: its name is a word in packs and wants; this is
+/// what it is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Item {
+    pub name: String,
+    pub description: String,
+    pub recipe: Vec<(String, u32)>,
+    pub maker: PlayerId,
+}
+
+/// "2 fish, 1 gold".
+pub fn goods_text(list: &[(String, u32)]) -> String {
+    list.iter()
+        .map(|(r, n)| format!("{n} {r}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// "2 fish and a gold coin" -> [("fish", 2), ("gold coin", 1)]. What people
+/// write when they name goods.
+pub fn goods(s: &str) -> Vec<(String, u32)> {
+    let mut out: Vec<(String, u32)> = Vec::new();
+    for part in s
+        .replace(" and ", ",")
+        .replace(" plus ", ",")
+        .replace('+', ",")
+        .split(',')
+    {
+        let mut words: Vec<&str> = part.split_whitespace().collect();
+        let mut n = 1;
+        if let Some(first) = words.first() {
+            if let Some(k) = count_word(first) {
+                n = k.max(1) as u32;
+                words.remove(0);
+            } else if matches!(*first, "a" | "an" | "some" | "the") {
+                words.remove(0);
+            }
+        }
+        let item = words.join(" ");
+        if let Ok(item) = clean_item(&item) {
+            add(&mut out, &item, n);
+        }
+    }
+    out
+}
+
+/// The key in a pack that means `item`: the same word, or its plural.
+fn held_key(list: &[(String, u32)], item: &str) -> Option<String> {
+    let want = item.trim().to_lowercase();
+    list.iter()
+        .find(|(k, n)| *n > 0 && (*k == want || singular(k) == singular(&want)))
+        .map(|(k, _)| k.clone())
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -426,6 +516,27 @@ pub enum Command {
     Build { site: String },
     /// Tear down a place the character founded, site or building.
     Abandon { site: String },
+    /// Hand something carried to a person within reach; no amount is all of it.
+    Give {
+        item: String,
+        amount: Option<u32>,
+        to: String,
+    },
+    /// Tell a character of one's own making what it wants and what it gives.
+    SetWant {
+        npc: String,
+        item: String,
+        amount: u32,
+        reward: Vec<(String, u32)>,
+        repeat: bool,
+        words: String,
+    },
+    /// Make a thing from carried materials, at a built building.
+    Craft {
+        item: String,
+        description: String,
+        from: Vec<(String, u32)>,
+    },
     /// Bring a character into the world where the player stands.
     CreateNpc { name: String, persona: String },
     /// Set the standing Lua script; an empty source clears it.
@@ -454,6 +565,8 @@ impl Command {
                 | Command::Bank
                 | Command::Build { .. }
                 | Command::Say { .. }
+                | Command::Give { .. }
+                | Command::Craft { .. }
         )
     }
 }
@@ -486,6 +599,22 @@ impl fmt::Display for Command {
             Command::FoundPlace { name, .. } => write!(f, "found {name}"),
             Command::Build { site } => write!(f, "build {site}"),
             Command::Abandon { site } => write!(f, "abandon {site}"),
+            Command::Give {
+                item,
+                amount: Some(n),
+                to,
+            } => write!(f, "give {n} {item} to {to}"),
+            Command::Give {
+                item,
+                amount: None,
+                to,
+            } => write!(f, "give {item} to {to}"),
+            Command::SetWant {
+                npc, item, amount, ..
+            } => {
+                write!(f, "{npc} wants {amount} {item}")
+            }
+            Command::Craft { item, .. } => write!(f, "make {item}"),
             Command::CreateNpc { name, .. } => write!(f, "create {name}"),
             Command::SetScript { source } if source.trim().is_empty() => write!(f, "clear script"),
             Command::SetScript { .. } => write!(f, "set script"),
@@ -523,6 +652,8 @@ pub struct World {
     pub npcs: Vec<Npc>,
     pub players: Vec<Player>,
     pub events: Vec<Event>,
+    /// Everything anyone has made, by name.
+    pub items: Vec<Item>,
     speeches: Vec<Speech>,
     next_id: u32,
     next_npc: u32,
@@ -596,6 +727,20 @@ fn clean_name(s: &str) -> Result<String, String> {
     Ok(s)
 }
 
+/// The name of a thing: lowercase, up to thirty characters of letters,
+/// spaces, hyphens and apostrophes ("smoked fish", "fish-oil lantern").
+fn clean_item(s: &str) -> Result<String, String> {
+    let s = tidy(s, 30).to_lowercase();
+    if s.chars().count() < 2
+        || !s
+            .chars()
+            .all(|c| c.is_alphabetic() || matches!(c, ' ' | '-' | '\''))
+    {
+        return Err(format!("'{s}' is not the name of a thing (letters)"));
+    }
+    Ok(s)
+}
+
 /// A resource or skill word: lowercase letters and spaces.
 fn clean_word(s: &str) -> Result<String, String> {
     let s = tidy(s, WORD_MAX).to_lowercase();
@@ -603,6 +748,19 @@ fn clean_word(s: &str) -> Result<String, String> {
         return Err(format!("'{s}' is not a resource word (lowercase letters)"));
     }
     Ok(s)
+}
+
+/// "wren" names "Old Wren"; so does "old wren" and "Wren".
+fn names_match(name: &str, q: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n == q
+        || n.split_whitespace().any(|w| w.len() >= 3 && q.contains(w))
+        || q.split_whitespace().any(|w| w.len() >= 3 && n.contains(w))
+}
+
+enum Someone {
+    Npc(NpcId),
+    Player(PlayerId),
 }
 
 fn singular(s: &str) -> &str {
@@ -743,6 +901,7 @@ impl World {
             npcs: Vec::new(),
             players: Vec::new(),
             events: Vec::new(),
+            items: Vec::new(),
             speeches: Vec::new(),
             next_id: 1,
             next_npc: 1,
@@ -827,6 +986,40 @@ impl World {
     pub fn place_at(&self, x: i32, y: i32) -> Option<&Place> {
         self.places.iter().find(|p| p.near(x, y))
     }
+    /// A person within two tiles, by name: an NPC or another player.
+    fn someone_near(&self, who: PlayerId, px: i32, py: i32, name: &str) -> Result<Someone, String> {
+        let q = name.trim().to_ascii_lowercase();
+        if q.is_empty() {
+            return Err("give to whom?".into());
+        }
+        let reach = |x: i32, y: i32| (x - px).abs() <= 2 && (y - py).abs() <= 2;
+        if let Some(n) = self.npcs.iter().find(|n| names_match(&n.name, &q)) {
+            return if reach(n.x, n.y) {
+                Ok(Someone::Npc(n.id))
+            } else {
+                Err(format!(
+                    "{} is not within reach; walk to them first",
+                    n.name
+                ))
+            };
+        }
+        if let Some(p) = self
+            .players
+            .iter()
+            .find(|p| p.id != who && names_match(&p.name, &q))
+        {
+            return if reach(p.x, p.y) {
+                Ok(Someone::Player(p.id))
+            } else {
+                Err(format!(
+                    "{} is not within reach; walk to them first",
+                    p.name
+                ))
+            };
+        }
+        Err(format!("there is nobody called '{name}' here"))
+    }
+
     /// Water, or a building: nobody walks here.
     fn blocked(&self, x: i32, y: i32) -> bool {
         !self.tile(x, y).walkable() || self.places.iter().any(|p| p.blocks(x, y))
@@ -1573,6 +1766,181 @@ impl World {
                 );
                 Ok(format!("{name} tears down {}.", pl.name))
             }
+            Command::Give { item, amount, to } => {
+                let item = clean_item(item)?;
+                let inv = self.player(who).unwrap().inventory.clone();
+                let key = held_key(&inv, &item)
+                    .ok_or_else(|| format!("{name} is not carrying any {item}"))?;
+                let have = count(&inv, &key);
+                let n = amount.unwrap_or(have).min(have);
+                if n == 0 {
+                    return Err(format!("{name} has no {key} to give"));
+                }
+                let someone = self.someone_near(who, px, py, to)?;
+                take(&mut self.player_mut(who).unwrap().inventory, &key, n);
+                match someone {
+                    Someone::Player(pid) => {
+                        let other = self.player_mut(pid).unwrap();
+                        add(&mut other.inventory, &key, n);
+                        let oname = other.name.clone();
+                        self.note_kind("give", &name, format!("gave {n} {key} to {oname}"));
+                        Ok(format!("{name} gives {n} {key} to {oname}."))
+                    }
+                    Someone::Npc(id) => {
+                        let tick = self.tick;
+                        let npc = self.npcs.iter_mut().find(|x| x.id == id).unwrap();
+                        add(&mut npc.holds, &key, n);
+                        let nname = npc.name.clone();
+                        // The want, if this is what they were after.
+                        let mut paid: Vec<(String, u32)> = Vec::new();
+                        let mut met = false;
+                        if let Some(w) = &mut npc.want {
+                            if singular(&w.item) == singular(&key) {
+                                w.given += n;
+                                if w.given >= w.amount {
+                                    met = true;
+                                    paid = w.reward.clone();
+                                    if w.repeat {
+                                        w.given -= w.amount;
+                                    }
+                                }
+                            }
+                        }
+                        if met && !npc.want.as_ref().is_some_and(|w| w.repeat) {
+                            npc.want = None;
+                        }
+                        self.speeches.push(Speech {
+                            tick,
+                            speaker: who,
+                            listener: id,
+                            text: format!("*hands over {n} {key}"),
+                        });
+                        self.note_kind("give", &name, format!("gave {n} {key} to {nname}"));
+                        if met {
+                            let me = self.player_mut(who).unwrap();
+                            for (r, k) in &paid {
+                                add(&mut me.inventory, r, *k);
+                            }
+                            let what = if paid.is_empty() {
+                                "thanks".to_string()
+                            } else {
+                                goods_text(&paid)
+                            };
+                            self.note_kind(
+                                "give",
+                                &nname,
+                                format!("gives {name} {what} for the {key}"),
+                            );
+                            return Ok(format!(
+                                "{name} gives {n} {key} to {nname}. {nname} gives {name} {what} for the {key}."
+                            ));
+                        }
+                        Ok(format!("{name} gives {n} {key} to {nname}."))
+                    }
+                }
+            }
+            Command::SetWant {
+                npc,
+                item,
+                amount,
+                reward,
+                repeat,
+                words,
+            } => {
+                let q = npc.trim().to_ascii_lowercase();
+                let id = self
+                    .npcs
+                    .iter()
+                    .find(|n| names_match(&n.name, &q))
+                    .map(|n| n.id)
+                    .ok_or_else(|| format!("there is nobody called '{npc}'"))?;
+                let item = clean_item(item)?;
+                let amount = (*amount).max(1);
+                let reward: Vec<(String, u32)> = reward
+                    .iter()
+                    .map(|(r, k)| Ok((clean_item(r)?, (*k).max(1))))
+                    .collect::<Result<_, String>>()?;
+                let n = self.npcs.iter_mut().find(|n| n.id == id).unwrap();
+                if n.creator != who {
+                    return Err(format!("{} is not {name}'s to direct", n.name));
+                }
+                n.want = Some(Want {
+                    item,
+                    amount,
+                    given: 0,
+                    reward,
+                    repeat: *repeat,
+                    words: tidy(words, TEXT_MAX),
+                });
+                let nname = n.name.clone();
+                let text = n.want.as_ref().unwrap().text();
+                self.note(&nname, format!("now wants {text}"));
+                Ok(format!("{nname} now wants {text}."))
+            }
+            Command::Craft {
+                item,
+                description,
+                from,
+            } => {
+                let item = clean_item(item)?;
+                if from.is_empty() {
+                    return Err(format!("say what {item} is made from"));
+                }
+                let shop = self
+                    .places
+                    .iter()
+                    .find(|pl| pl.form.blocks() && pl.built() && pl.near(px, py))
+                    .cloned()
+                    .ok_or(
+                        "making things takes a workshop: stand at a built building (a forge, a mill, a hut...)",
+                    )?;
+                let inv = self.player(who).unwrap().inventory.clone();
+                let mut used: Vec<(String, u32)> = Vec::new();
+                for (m, k) in from {
+                    let k = (*k).max(1);
+                    let key = held_key(&inv, m)
+                        .filter(|key| count(&inv, key) >= k)
+                        .ok_or_else(|| {
+                            format!(
+                                "{name} needs {k} {m} to make {item}; carrying: {}",
+                                if inv.is_empty() {
+                                    "nothing".to_string()
+                                } else {
+                                    goods_text(&inv)
+                                }
+                            )
+                        })?;
+                    add(&mut used, &key, k);
+                }
+                let total: u32 = used.iter().map(|(_, k)| *k).sum();
+                {
+                    let me = self.player_mut(who).unwrap();
+                    for (r, k) in &used {
+                        take(&mut me.inventory, r, *k);
+                    }
+                    add(&mut me.inventory, &item, 1);
+                    add(&mut me.xp, "crafting", 10 * total);
+                }
+                let description = tidy(description, TEXT_MAX);
+                if !self.items.iter().any(|i| i.name == item) {
+                    self.items.push(Item {
+                        name: item.clone(),
+                        description: description.clone(),
+                        recipe: used.clone(),
+                        maker: who,
+                    });
+                }
+                let from_text = goods_text(&used);
+                self.note_kind(
+                    "craft",
+                    &name,
+                    format!("made a {item} at {} from {from_text}", shop.name),
+                );
+                Ok(format!(
+                    "{name} makes a {item} at {} from {from_text}.",
+                    shop.name
+                ))
+            }
             Command::CreateNpc {
                 name: nname,
                 persona,
@@ -1609,6 +1977,8 @@ impl World {
                     x: nx,
                     y: ny,
                     creator: who,
+                    holds: Vec::new(),
+                    want: None,
                 });
                 self.note(&name, format!("brought {nname} into the world"));
                 Ok(format!("{nname} is here now, beside {name}."))
@@ -1837,6 +2207,45 @@ impl World {
                 self.advance(id);
             }
         }
+        self.hail();
+    }
+
+    /// An NPC with a want calls out to whoever comes by carrying it: a cue
+    /// for the voice, at most once in forty ticks, never while one is
+    /// already waiting to be answered.
+    fn hail(&mut self) {
+        let tick = self.tick;
+        let mut cues = Vec::new();
+        for n in &self.npcs {
+            let Some(w) = &n.want else { continue };
+            if self.speeches.iter().any(|s| s.listener == n.id) {
+                continue;
+            }
+            let spoke_lately = self
+                .events
+                .iter()
+                .rev()
+                .take(60)
+                .any(|e| e.kind == "voice" && e.name == n.name && e.tick + 40 > tick);
+            if spoke_lately {
+                continue;
+            }
+            let passer = self.players.iter().find(|p| {
+                (p.x - n.x).abs() <= 2
+                    && (p.y - n.y).abs() <= 2
+                    && held_key(&p.inventory, &w.item).is_some()
+            });
+            if let Some(p) = passer {
+                let key = held_key(&p.inventory, &w.item).unwrap();
+                cues.push(Speech {
+                    tick,
+                    speaker: p.id,
+                    listener: n.id,
+                    text: format!("*comes near, carrying {} {key}", count(&p.inventory, &key)),
+                });
+            }
+        }
+        self.speeches.extend(cues);
     }
 
     /// Breadth-first search over walkable tiles: the next tile toward `to`.
@@ -2002,11 +2411,18 @@ impl World {
             .collect();
         for n in &self.npcs {
             let d = (n.x - p.x).abs().max((n.y - p.y).abs());
+            let mut about = String::new();
+            if !n.holds.is_empty() {
+                about.push_str(&format!("; holds {}", goods_text(&n.holds)));
+            }
+            if let Some(w) = &n.want {
+                about.push_str(&format!("; wants {}", w.text()));
+            }
             if d <= 1 {
-                people.push(format!("{} (NPC, here)", n.name));
+                people.push(format!("{} (NPC, here{about})", n.name));
             } else {
                 people.push(format!(
-                    "{} (NPC, {d} {})",
+                    "{} (NPC, {d} {}{about})",
                     n.name,
                     compass(p.x, p.y, n.x, n.y)
                 ));
@@ -2023,7 +2439,10 @@ impl World {
         let inv: Vec<String> = p
             .inventory
             .iter()
-            .map(|(r, n)| format!("{n} {r}"))
+            .map(|(r, n)| match self.items.iter().find(|i| i.name == *r) {
+                Some(i) => format!("{n} {r} ({})", tidy(&i.description, 60)),
+                None => format!("{n} {r}"),
+            })
             .collect();
         let bank: Vec<String> = p.bank.iter().map(|(r, n)| format!("{n} {r}")).collect();
         s.push_str(&format!(
@@ -2597,5 +3016,142 @@ mod tests {
             .unwrap()
             .contains("tears down Ford House"));
         assert!(!w.places.iter().any(|p| p.name == "Ford House"));
+    }
+
+    #[test]
+    fn giving_wants_and_making_things() {
+        let mut w = World::new(5);
+        let me = w.join("Ada");
+        w.apply(
+            me,
+            &Command::CreateNpc {
+                name: "Old Wren".into(),
+                persona: "A forager.".into(),
+            },
+        )
+        .unwrap();
+        // Wren wants fish for gold, on repeat; only her maker may say so.
+        let want = Command::SetWant {
+            npc: "Wren".into(),
+            item: "fish".into(),
+            amount: 2,
+            reward: vec![("gold".into(), 1)],
+            repeat: true,
+            words: "a coin a pair".into(),
+        };
+        assert!(w
+            .apply(me, &want)
+            .unwrap()
+            .contains("now wants 2 fish for 1 gold"));
+        let other = w.join("Bea");
+        assert!(w
+            .apply(other, &want)
+            .unwrap()
+            .starts_with("x Old Wren is not"));
+        // Empty-handed giving is refused; with fish, she takes them and pays.
+        let give = |n: Option<u32>| Command::Give {
+            item: "fish".into(),
+            amount: n,
+            to: "Wren".into(),
+        };
+        assert!(w
+            .apply(me, &give(None))
+            .unwrap()
+            .starts_with("x Ada is not carrying"));
+        add(&mut w.player_mut(me).unwrap().inventory, "fish", 3);
+        let r = w.apply(me, &give(Some(2))).unwrap();
+        assert!(r.contains("Old Wren gives Ada 1 gold"), "{r}");
+        let p = w.player(me).unwrap();
+        assert_eq!(count(&p.inventory, "fish"), 1);
+        assert_eq!(count(&p.inventory, "gold"), 1);
+        let wren = w.npcs[0].clone();
+        assert_eq!(count(&wren.holds, "fish"), 2);
+        assert_eq!(
+            wren.want.as_ref().unwrap().given,
+            0,
+            "a standing trade resets"
+        );
+        assert!(w
+            .speeches()
+            .iter()
+            .any(|s| s.text.starts_with("*hands over")));
+        assert!(w
+            .describe(me)
+            .contains("wants 2 fish for 1 gold (0/2, standing)"));
+        // Passing by with fish, she calls out — once, and not while waiting.
+        w.take_speeches();
+        w.step();
+        assert_eq!(w.speeches().len(), 1);
+        assert!(w.speeches()[0].text.starts_with("*comes near"));
+        w.step();
+        assert_eq!(w.speeches().len(), 1);
+        // Making things takes a workshop and the materials.
+        let craft = Command::Craft {
+            item: "Fish Lantern".into(),
+            description: "A lantern that smells of the river.".into(),
+            from: vec![("fish".into(), 1)],
+        };
+        assert!(w
+            .apply(me, &craft)
+            .unwrap()
+            .starts_with("x making things takes a workshop"));
+        w.apply(
+            me,
+            &Command::FoundPlace {
+                name: "Shed".into(),
+                description: "d".into(),
+                resource: None,
+                skill: None,
+                form: Form::Hut,
+                style: None,
+            },
+        )
+        .unwrap();
+        let door = {
+            let pl = w.places.iter_mut().find(|p| p.name == "Shed").unwrap();
+            pl.needs.clear();
+            pl.work = 100;
+            pl.door()
+        };
+        {
+            let p = w.player_mut(me).unwrap();
+            p.x = door.0;
+            p.y = door.1;
+        }
+        let r = w.apply(me, &craft).unwrap();
+        assert!(r.contains("makes a fish lantern at Shed"), "{r}");
+        let p = w.player(me).unwrap();
+        assert_eq!(count(&p.inventory, "fish lantern"), 1);
+        assert_eq!(count(&p.inventory, "fish"), 0);
+        assert_eq!(w.items.len(), 1);
+        assert!(w
+            .describe(me)
+            .contains("1 fish lantern (A lantern that smells"));
+        // And a made thing can be handed to another player nearby.
+        let (ax, ay) = w.player(me).unwrap().pos();
+        {
+            let b = w.player_mut(other).unwrap();
+            b.x = ax + 1;
+            b.y = ay;
+        }
+        let r = w
+            .apply(
+                me,
+                &Command::Give {
+                    item: "fish lantern".into(),
+                    amount: None,
+                    to: "Bea".into(),
+                },
+            )
+            .unwrap();
+        assert!(r.contains("gives 1 fish lantern to Bea"), "{r}");
+        assert_eq!(
+            count(&w.player(other).unwrap().inventory, "fish lantern"),
+            1
+        );
+        assert_eq!(
+            goods("2 fish and a gold coin"),
+            vec![("fish".to_string(), 2), ("gold coin".to_string(), 1)]
+        );
     }
 }

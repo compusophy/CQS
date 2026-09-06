@@ -6,8 +6,30 @@ use std::collections::VecDeque;
 use gemini::{arr, obj, Value};
 
 use crate::{
-    Command, Event, Form, Npc, NpcId, Place, Player, PlayerId, Speech, Task, Tile, World, H, W,
+    Command, Event, Form, Item, Npc, NpcId, Place, Player, PlayerId, Speech, Task, Tile, Want,
+    World, H, W,
 };
+
+fn want_json(w: &Want) -> Value {
+    obj! {
+        "item" => w.item.as_str(), "amount" => w.amount, "given" => w.given,
+        "reward" => list(&w.reward), "repeat" => w.repeat, "words" => w.words.as_str(),
+    }
+}
+
+fn unwant(v: &Value) -> Result<Option<Want>, String> {
+    if v.is_null() {
+        return Ok(None);
+    }
+    Ok(Some(Want {
+        item: v.get("item").to_text(),
+        amount: v.get("amount").as_u32().unwrap_or(1),
+        given: v.get("given").as_u32().unwrap_or(0),
+        reward: unlist(v.get("reward"))?,
+        repeat: v.get("repeat").as_bool().unwrap_or(false),
+        words: v.get("words").to_text(),
+    }))
+}
 
 const EVENTS_KEPT: usize = 40;
 
@@ -102,7 +124,10 @@ impl World {
         let npcs: Vec<Value> = self
             .npcs
             .iter()
-            .map(|n| obj! {"name" => n.name.as_str(), "x" => n.x, "y" => n.y})
+            .map(|n| {
+                obj! {"name" => n.name.as_str(), "x" => n.x, "y" => n.y, "holds" => list(&n.holds)}
+                    .with_opt("wants", n.want.as_ref().map(Want::text))
+            })
             .collect();
         let players: Vec<Value> = self
             .players
@@ -217,7 +242,15 @@ impl World {
         let npcs: Vec<Value> = self
             .npcs
             .iter()
-            .map(|n| obj! {"id" => n.id.0, "name" => n.name.as_str(), "persona" => n.persona.as_str(), "x" => n.x, "y" => n.y, "creator" => n.creator.0})
+            .map(|n| {
+                obj! {"id" => n.id.0, "name" => n.name.as_str(), "persona" => n.persona.as_str(), "x" => n.x, "y" => n.y, "creator" => n.creator.0, "holds" => list(&n.holds)}
+                    .with_opt("want", n.want.as_ref().map(want_json))
+            })
+            .collect();
+        let items: Vec<Value> = self
+            .items
+            .iter()
+            .map(|i| obj! {"name" => i.name.as_str(), "description" => i.description.as_str(), "recipe" => list(&i.recipe), "maker" => i.maker.0})
             .collect();
         let players: Vec<Value> = self
             .players
@@ -258,6 +291,7 @@ impl World {
             "npcs" => npcs,
             "players" => players,
             "events" => events,
+            "items" => items,
             "speeches" => speeches,
         }
     }
@@ -323,6 +357,8 @@ impl World {
                     x: i32_of(n, "x")?,
                     y: i32_of(n, "y")?,
                     creator: PlayerId(n.get("creator").as_u32().unwrap_or(0)),
+                    holds: unlist(n.get("holds"))?,
+                    want: unwant(n.get("want"))?,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -376,6 +412,8 @@ impl World {
                     Some("join") => "join",
                     Some("script") => "script",
                     Some("build") => "build",
+                    Some("give") => "give",
+                    Some("craft") => "craft",
                     _ => "note",
                 },
             })
@@ -397,6 +435,19 @@ impl World {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
+        let items = v
+            .get("items")
+            .as_arr()
+            .iter()
+            .map(|i| {
+                Ok(Item {
+                    name: i.get("name").to_text(),
+                    description: i.get("description").to_text(),
+                    recipe: unlist(i.get("recipe"))?,
+                    maker: PlayerId(i.get("maker").as_u32().unwrap_or(0)),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         Ok(World {
             seed: v.get("seed").as_f64().unwrap_or(0.0) as u64,
             tick: v.get("tick").as_f64().unwrap_or(0.0) as u64,
@@ -405,6 +456,7 @@ impl World {
             npcs,
             players,
             events,
+            items,
             speeches,
             next_id: v.get("next_id").as_u32().unwrap_or(1),
             next_npc: v.get("next_npc").as_u32().unwrap_or(1),

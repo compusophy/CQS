@@ -339,3 +339,27 @@ behind a scaffold, clipped at how much of it stands.
 Not lifted, on purpose: Tiny Empires' factions, combat, and training. cqs
 has one civilisation and the difference between buildings is who founded
 them and what they said.
+
+## Things change hands (2026-09-05): give, wants, made things
+
+The Nettle episode: the voice invented a quest ("bring me a fresh catch")
+and the world had no way to let it happen. Now it does, in three verbs.
+
+- **give** hands something carried to a person within two tiles, NPC or
+  player. NPCs keep what they are given (`holds`), and the voice knows it.
+- **wants** are a quest in one line, set by whoever made the NPC: what it
+  wants, how many, what it hands back, and whether the trade stands or ends.
+  Giving the wanted thing counts toward it; meeting it pays the reward into
+  the giver's pack and cues the voice to react. An NPC with a want *hails*
+  anyone who walks by carrying it (a cue speech, at most once in forty
+  ticks), so a quest finds you.
+- **craft** makes a named thing from carried materials at any built
+  building. The model names it, describes it, and says what it is made of;
+  the world checks the materials are in hand and the workshop exists. Made
+  things are words in packs like any resource — carried, banked, given,
+  wanted — and the world keeps a catalogue of what they are.
+
+Cues: a speech whose text starts with `*` is something done, not said
+("*hands over 2 fish"); the voice prompt renders it as an action line. No
+new ledger kind was needed — a cue is a `Speech` and a reaction is an
+`NpcSays`, as before.

@@ -152,6 +152,18 @@ impl Command {
             }
             Command::Build { site } => obj! {"c" => "build", "site" => site.as_str()},
             Command::Abandon { site } => obj! {"c" => "abandon", "site" => site.as_str()},
+            Command::Give { item, amount, to } => {
+                obj! {"c" => "give", "item" => item.as_str(), "to" => to.as_str()}.with_opt("amount", *amount)
+            }
+            Command::SetWant { npc, item, amount, reward, repeat, words } => obj! {
+                "c" => "want", "npc" => npc.as_str(), "item" => item.as_str(), "amount" => *amount,
+                "reward" => Value::Arr(reward.iter().map(|(r, n)| gemini::arr![r.as_str(), *n]).collect()),
+                "repeat" => *repeat, "words" => words.as_str(),
+            },
+            Command::Craft { item, description, from } => obj! {
+                "c" => "craft", "item" => item.as_str(), "description" => description.as_str(),
+                "from" => Value::Arr(from.iter().map(|(r, n)| gemini::arr![r.as_str(), *n]).collect()),
+            },
             Command::CreateNpc { name, persona } => obj! {"c" => "npc", "name" => name.as_str(), "persona" => persona.as_str()},
             Command::SetScript { source } => obj! {"c" => "script", "source" => source.as_str()},
         }
@@ -159,6 +171,14 @@ impl Command {
 
     pub fn from_json(v: &Value) -> Result<Command, String> {
         let text = |k: &str| v.get(k).to_text();
+        let pairs = |v: &Value| -> Vec<(String, u32)> {
+            v.as_arr()
+                .iter()
+                .filter_map(|p| {
+                    Some((p.at(0).as_str()?.to_string(), p.at(1).as_u32().unwrap_or(1)))
+                })
+                .collect()
+        };
         let opt = |k: &str| {
             v.get(k)
                 .as_str()
@@ -192,6 +212,24 @@ impl Command {
             },
             Some("build") => Command::Build { site: text("site") },
             Some("abandon") => Command::Abandon { site: text("site") },
+            Some("give") => Command::Give {
+                item: text("item"),
+                amount: v.get("amount").as_u32(),
+                to: text("to"),
+            },
+            Some("want") => Command::SetWant {
+                npc: text("npc"),
+                item: text("item"),
+                amount: v.get("amount").as_u32().unwrap_or(1),
+                reward: pairs(v.get("reward")),
+                repeat: v.get("repeat").as_bool().unwrap_or(false),
+                words: text("words"),
+            },
+            Some("craft") => Command::Craft {
+                item: text("item"),
+                description: text("description"),
+                from: pairs(v.get("from")),
+            },
             Some("npc") => Command::CreateNpc {
                 name: text("name"),
                 persona: text("persona"),
@@ -460,6 +498,24 @@ mod tests {
             },
             Command::Abandon {
                 site: "Damp Hollow".into(),
+            },
+            Command::Give {
+                item: "fish".into(),
+                amount: Some(2),
+                to: "Wren".into(),
+            },
+            Command::SetWant {
+                npc: "Wren".into(),
+                item: "fish".into(),
+                amount: 5,
+                reward: vec![("gold".into(), 2)],
+                repeat: true,
+                words: "w".into(),
+            },
+            Command::Craft {
+                item: "lantern".into(),
+                description: "d".into(),
+                from: vec![("fish".into(), 1), ("iron".into(), 2)],
             },
             Command::CreateNpc {
                 name: "Wren".into(),

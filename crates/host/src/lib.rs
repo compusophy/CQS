@@ -131,7 +131,9 @@ POST /api/world               body: {\"token\": T, \"name\": N?, \"words\": W?, 
   words   what your character should do or say; a model turns it into steps
   cmds    steps directly, no model: [{\"c\":\"move_to\",\"target\":\"Old Forest\"},{\"c\":\"gather\",\"resource\":\"wood\",\"amount\":10},{\"c\":\"bank\"}]
           also {\"c\":\"say\",\"text\"} {\"c\":\"look\"} {\"c\":\"stop\"} {\"c\":\"save\",\"name\"} {\"c\":\"run\",\"name\",\"forever\"}
-          {\"c\":\"found\",\"name\",\"description\",\"form\"?,\"style\"?,\"resource\"?,\"skill\"?} {\"c\":\"build\",\"site\"} {\"c\":\"abandon\",\"site\"} {\"c\":\"npc\",\"name\",\"persona\"} {\"c\":\"script\",\"source\"}
+          {\"c\":\"found\",\"name\",\"description\",\"form\"?,\"style\"?,\"resource\"?,\"skill\"?} {\"c\":\"build\",\"site\"} {\"c\":\"abandon\",\"site\"}
+          {\"c\":\"give\",\"item\",\"amount\"?,\"to\"} {\"c\":\"want\",\"npc\",\"item\",\"amount\",\"reward\":[[\"gold\",2]],\"repeat\",\"words\"}
+          {\"c\":\"craft\",\"item\",\"description\",\"from\":[[\"iron\",2]]} (at a built building, from carried materials) {\"c\":\"npc\",\"name\",\"persona\"} {\"c\":\"script\",\"source\"}
           form: banner (a free spot) or a building — hut, house, hall, tower, spire, forge, mill, shrine, well — marked out with a bill of
           materials that must be CARRIED to the site; build walks there, hands over what is carried, and works until it stands
   script  a standing Lua script (empty string clears it); runs whenever your character is idle, at most once every five ticks
