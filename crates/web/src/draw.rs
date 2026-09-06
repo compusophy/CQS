@@ -162,7 +162,7 @@ impl Scene {
             name: n.get("name").to_text(),
             x: n.get("x").as_i64().unwrap_or(0) as i32,
             y: n.get("y").as_i64().unwrap_or(0) as i32,
-            doing: "idle".into(),
+            doing: n.get("doing").as_str().unwrap_or("idle").to_string(),
             resource: None,
             me: false,
             npc: true,
