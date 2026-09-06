@@ -365,7 +365,11 @@ fn people_json(scene: &Value, me: &str, mx: i32, my: i32) -> Value {
             p.get("x").as_i64().unwrap_or(0) as i32,
             p.get("y").as_i64().unwrap_or(0) as i32,
         );
-        out.push(obj! {"name" => p.get("name").clone(), "x" => x, "y" => y, "npc" => false, "doing" => p.get("doing").clone(), "distance" => chebyshev(mx, my, x, y)});
+        let mut carrying = Value::obj();
+        for pair in p.get("carrying").as_arr() {
+            carrying.set(&pair.at(0).to_text(), pair.at(1).clone());
+        }
+        out.push(obj! {"name" => p.get("name").clone(), "x" => x, "y" => y, "npc" => false, "doing" => p.get("doing").clone(), "carrying" => carrying, "distance" => chebyshev(mx, my, x, y)});
     }
     for n in scene.get("npcs").as_arr() {
         let (x, y) = (

@@ -140,7 +140,7 @@ impl World {
                     Task::Gather { resource, .. } => ("gather", Some(resource.as_str())),
                     Task::Build { .. } => ("build", None),
                 };
-                obj! {"name" => p.name.as_str(), "x" => p.x, "y" => p.y, "doing" => doing, "me" => Some(p.id) == me}
+                obj! {"name" => p.name.as_str(), "x" => p.x, "y" => p.y, "doing" => doing, "me" => Some(p.id) == me, "carrying" => list(&p.inventory)}
                     .with_opt("resource", res)
             })
             .collect();
