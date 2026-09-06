@@ -3,7 +3,10 @@
 use world::World;
 
 fn main() {
-    let seed: u64 = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(7);
+    let seed: u64 = std::env::args()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(7);
     let w = World::new(seed);
     let mut rows: Vec<Vec<char>> = w.ascii().lines().map(|l| l.chars().collect()).collect();
     for (i, p) in w.places.iter().enumerate() {

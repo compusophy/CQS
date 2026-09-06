@@ -590,6 +590,32 @@ pub fn draw(f: &mut Frame, prev: Option<&Scene>, cur: &Scene, t: f32, ms: f64) {
             }
         }
     }
+    // Night: a day is 1200 ticks; from dusk the world blues and dims, and
+    // every character carries a little light of their own.
+    let day = (cur.tick % 1200) as f32 / 1200.0;
+    let dark = ((day - 0.5).abs() * 2.0 - 0.55).max(0.0) / 0.45;
+    if dark > 0.0 {
+        let alpha = (dark * 120.0) as u32;
+        let (mw, mh) = (f.w, f.h);
+        f.shade_rect(0, 0, mw, mh, 0x0b1a3a, alpha);
+        for (i, _) in cur.figures.iter().enumerate() {
+            let (px, py) = at[i];
+            f.shade_disc(
+                px + TILE / 2,
+                py + TILE / 2,
+                TILE,
+                0xffd28a,
+                (dark * 40.0) as u32,
+            );
+            f.shade_disc(
+                px + TILE / 2,
+                py + TILE / 2,
+                TILE / 2,
+                0xffd28a,
+                (dark * 40.0) as u32,
+            );
+        }
+    }
     // Names over everything, so a wall never hides who is behind it — and
     // never on top of each other: a name that would land on another is
     // nudged up until it has a row of its own.

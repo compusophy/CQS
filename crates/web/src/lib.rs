@@ -532,8 +532,8 @@ async fn main() -> Result<(), JsValue> {
     {
         let token = token.clone();
         let display = display.clone();
-        let on_join =
-            Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |e: web_sys::KeyboardEvent| {
+        let on_join = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(
+            move |e: web_sys::KeyboardEvent| {
                 if e.key() != "Enter" {
                     return;
                 }
@@ -559,6 +559,14 @@ async fn main() -> Result<(), JsValue> {
                             show("play", true);
                             set_text("status", "");
                             render_view(&display, &v);
+                            // What to say to a world piloted by words.
+                            console(
+                                "ack",
+                                None,
+                                "You're in. Tell your character what to do, in plain words:",
+                            );
+                            console("ack", None, "chop 10 wood and bank it · build a hut here · make a smith called Brannock");
+                            console("ack", None, "hand Nettle 3 fish · forge a lantern from 2 iron · whenever I have 20 wood, bank it");
                             if let Some(f) = input("say") {
                                 let _ = f.focus();
                             }
@@ -570,7 +578,8 @@ async fn main() -> Result<(), JsValue> {
                         Err(e) => set_text("status", &e),
                     }
                 });
-            });
+            },
+        );
         if let Some(field) = input("name") {
             field.add_event_listener_with_callback("keydown", on_join.as_ref().unchecked_ref())?;
             let _ = field.focus();
