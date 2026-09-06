@@ -2,11 +2,20 @@
 //! rasterizers that do it. No canvas drawing API, no fonts from the browser —
 //! rects, discs, lines, dither and a bitmap face, exactly as Tiny Empires
 //! draws. The browser only ever receives finished pixels.
+//!
+//! The frame is a WINDOW onto the world, not the world: sixteen tiles square,
+//! following your character, the way Tiny Empires' field follows its camera.
+//! Buildings are drawn by `arch`; a minimap in the corner keeps the whole map
+//! in view.
 
 use gemini::Value;
 
-/// One map tile is this many pixels; 32×32 tiles is 768×768, a square frame.
-pub const TILE: i32 = 24;
+use crate::arch;
+
+/// One map tile is this many pixels.
+pub const TILE: i32 = 48;
+/// The window onto the world: sixteen tiles square.
+pub const VIEW: i32 = 16 * TILE;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tile {
@@ -29,14 +38,39 @@ impl Tile {
             _ => Tile::Grass,
         }
     }
+    fn base(self) -> u32 {
+        match self {
+            Tile::Grass => 0x4f8a3f,
+            Tile::Water => 0x2c68a3,
+            Tile::Forest => 0x3e7534,
+            Tile::Hill => 0x8c8069,
+            Tile::Road => 0xb8a27b,
+            Tile::Town => 0x9a9791,
+        }
+    }
 }
 
+/// A place: a banner on a spot, or a building with a footprint.
 #[derive(Clone, Debug, Default)]
 pub struct Mark {
     pub name: String,
     pub x: i32,
     pub y: i32,
     pub resource: Option<String>,
+    /// "banner", "hut", "house", "hall", "tower", "spire", "forge", "mill", "shrine", "well".
+    pub form: String,
+    pub w: i32,
+    pub h: i32,
+    pub built: bool,
+    /// 0..1 of the work done, once the materials are on site.
+    pub progress: f32,
+    pub style: Option<String>,
+}
+
+impl Mark {
+    pub fn built(&self) -> bool {
+        self.built
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -44,7 +78,7 @@ pub struct Figure {
     pub name: String,
     pub x: i32,
     pub y: i32,
-    /// "idle", "walk", "gather"
+    /// "idle", "walk", "gather", "build"
     pub doing: String,
     pub resource: Option<String>,
     pub me: bool,
@@ -94,6 +128,17 @@ impl Scene {
                 x: p.get("x").as_i64().unwrap_or(0) as i32,
                 y: p.get("y").as_i64().unwrap_or(0) as i32,
                 resource: p.get("resource").as_str().map(str::to_string),
+                form: p
+                    .get("form")
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("banner")
+                    .to_string(),
+                w: p.get("w").as_i64().unwrap_or(1).max(1) as i32,
+                h: p.get("h").as_i64().unwrap_or(1).max(1) as i32,
+                built: p.get("built").as_bool().unwrap_or(true),
+                progress: p.get("progress").as_f64().unwrap_or(1.0) as f32,
+                style: p.get("style").as_str().map(str::to_string),
             })
             .collect();
         let mut figures: Vec<Figure> = v
@@ -158,6 +203,8 @@ pub struct Frame {
     pub h: i32,
     /// RGBA, row-major, exactly what `putImageData` wants.
     pub px: Vec<u8>,
+    /// Rows above this are not painted: how a building rises from the ground.
+    pub clip_top: i32,
 }
 
 impl Frame {
@@ -166,12 +213,13 @@ impl Frame {
             w,
             h,
             px: vec![0; (w * h * 4) as usize],
+            clip_top: 0,
         }
     }
 
     #[inline]
     pub fn put(&mut self, x: i32, y: i32, rgb: u32) {
-        if x < 0 || y < 0 || x >= self.w || y >= self.h {
+        if x < 0 || y < self.clip_top || x >= self.w || y >= self.h {
             return;
         }
         let i = ((y * self.w + x) * 4) as usize;
@@ -184,7 +232,7 @@ impl Frame {
     /// Blend `rgb` over the pixel with `alpha` in 0..=255.
     #[inline]
     pub fn blend(&mut self, x: i32, y: i32, rgb: u32, alpha: u32) {
-        if x < 0 || y < 0 || x >= self.w || y >= self.h {
+        if x < 0 || y < self.clip_top || x >= self.w || y >= self.h {
             return;
         }
         let i = ((y * self.w + x) * 4) as usize;
@@ -196,7 +244,7 @@ impl Frame {
     }
 
     pub fn fill_rect(&mut self, x: i32, y: i32, w: i32, h: i32, rgb: u32) {
-        for yy in y.max(0)..(y + h).min(self.h) {
+        for yy in y.max(self.clip_top)..(y + h).min(self.h) {
             for xx in x.max(0)..(x + w).min(self.w) {
                 self.put(xx, yy, rgb);
             }
@@ -204,7 +252,7 @@ impl Frame {
     }
 
     pub fn shade_rect(&mut self, x: i32, y: i32, w: i32, h: i32, rgb: u32, alpha: u32) {
-        for yy in y.max(0)..(y + h).min(self.h) {
+        for yy in y.max(self.clip_top)..(y + h).min(self.h) {
             for xx in x.max(0)..(x + w).min(self.w) {
                 self.blend(xx, yy, rgb, alpha);
             }
@@ -291,7 +339,7 @@ impl Frame {
         cx - x
     }
 
-    /// Text with a one-pixel dark shadow, so it reads on any ground.
+    /// Text with a dark shadow, so it reads on any ground.
     pub fn label(&mut self, x: i32, y: i32, s: &str, rgb: u32, scale: i32) {
         self.text(x + scale, y + scale, s, 0x101418, scale);
         self.text(x, y, s, rgb, scale);
@@ -334,7 +382,7 @@ pub fn wrap(s: &str, cols: usize, max_lines: usize) -> Vec<String> {
 }
 
 /// A small, fast, deterministic hash: the same speckle every frame.
-fn hash(x: i32, y: i32, salt: u32) -> u32 {
+pub(crate) fn hash(x: i32, y: i32, salt: u32) -> u32 {
     let mut h = (x as u32).wrapping_mul(0x9E37_79B9)
         ^ (y as u32).wrapping_mul(0x85EB_CA6B)
         ^ salt.wrapping_mul(0xC2B2_AE35);
@@ -344,7 +392,7 @@ fn hash(x: i32, y: i32, salt: u32) -> u32 {
     h
 }
 
-fn name_hash(s: &str) -> u32 {
+pub(crate) fn name_hash(s: &str) -> u32 {
     s.bytes().fold(0x811C_9DC5u32, |h, b| {
         (h ^ b as u32).wrapping_mul(0x0100_0193)
     })
@@ -377,7 +425,7 @@ fn resource_color(r: &str) -> u32 {
 // Drawing the scene
 // ---------------------------------------------------------------------------
 
-/// Where a figure stands, in pixels, interpolated between two scenes.
+/// Where a figure stands, in world pixels, interpolated between two scenes.
 fn lerp_pos(prev: Option<&Figure>, cur: &Figure, t: f32) -> (i32, i32) {
     let (tx, ty) = (cur.x as f32 * TILE as f32, cur.y as f32 * TILE as f32);
     let (fx, fy) = match prev {
@@ -389,53 +437,149 @@ fn lerp_pos(prev: Option<&Figure>, cur: &Figure, t: f32) -> (i32, i32) {
     ((fx + (tx - fx) * t) as i32, (fy + (ty - fy) * t) as i32)
 }
 
+fn earlier<'a>(prev: Option<&'a Scene>, fig: &Figure) -> Option<&'a Figure> {
+    prev.and_then(|s| {
+        s.figures
+            .iter()
+            .find(|p| p.name == fig.name && p.npc == fig.npc)
+    })
+}
+
+/// The camera: on your character, else on Town, clamped to the map — and
+/// a map smaller than the window sits in the middle of it.
+fn camera(f: &Frame, prev: Option<&Scene>, cur: &Scene, t: f32) -> (i32, i32) {
+    let (cx, cy) = if let Some(fig) = cur.figures.iter().find(|g| g.me) {
+        let (px, py) = lerp_pos(earlier(prev, fig), fig, t);
+        (px + TILE / 2, py + TILE / 2)
+    } else if let Some(m) = cur.places.iter().find(|m| m.name == "Town") {
+        (m.x * TILE + TILE / 2, m.y * TILE + TILE / 2)
+    } else {
+        (cur.w * TILE / 2, cur.h * TILE / 2)
+    };
+    let clamp = |c: i32, span: i32, view: i32| {
+        if span <= view {
+            (span - view) / 2
+        } else {
+            (c - view / 2).clamp(0, span - view)
+        }
+    };
+    (clamp(cx, cur.w * TILE, f.w), clamp(cy, cur.h * TILE, f.h))
+}
+
+enum Thing {
+    Mark(usize),
+    Fig(usize),
+}
+
 /// Render one frame. `t` is how far (0..1) we are between `prev` and `cur`;
 /// `ms` is a clock for animation.
 pub fn draw(f: &mut Frame, prev: Option<&Scene>, cur: &Scene, t: f32, ms: f64) {
     let phase = (ms / 1000.0) as f32;
-    // Ground
-    for ty in 0..cur.h {
-        for tx in 0..cur.w {
-            draw_tile(f, cur, tx, ty, ms);
+    let (cam_x, cam_y) = camera(f, prev, cur, t);
+
+    // Ground: only the tiles the window can see, plus a rim for overhangs.
+    let (tx0, tx1) = (
+        cam_x.div_euclid(TILE) - 1,
+        (cam_x + f.w).div_euclid(TILE) + 1,
+    );
+    let (ty0, ty1) = (
+        cam_y.div_euclid(TILE) - 1,
+        (cam_y + f.h).div_euclid(TILE) + 1,
+    );
+    for ty in ty0..=ty1 {
+        for tx in tx0..=tx1 {
+            draw_tile(f, cur, tx, ty, tx * TILE - cam_x, ty * TILE - cam_y, ms);
         }
     }
-    // Places: a banner and a name
-    for p in &cur.places {
-        let x = p.x * TILE;
-        let y = p.y * TILE;
-        let color = p
-            .resource
-            .as_deref()
-            .map(resource_color)
-            .unwrap_or(0xd94a4a);
-        if p.name == "Town" {
-            draw_hall(f, x, y);
-        }
-        f.fill_rect(x + 11, y + 2, 2, 16, 0x3b2a1a);
-        f.fill_rect(x + 13, y + 3, 8, 5, color);
-        f.fill_rect(x + 13, y + 8, 5, 2, color);
-        let label = p.name.to_uppercase();
-        let w = text_width(&label, 1);
-        f.label(x + 12 - w / 2, y - 7, &label, 0xf3f0e6, 1);
+
+    // Everything standing on the ground, back to front by where its feet are.
+    let mut things: Vec<(i32, Thing)> = Vec::new();
+    let mut at: Vec<(i32, i32)> = Vec::with_capacity(cur.figures.len());
+    for (i, fig) in cur.figures.iter().enumerate() {
+        let (px, py) = lerp_pos(earlier(prev, fig), fig, t);
+        at.push((px - cam_x, py - cam_y));
+        things.push((py - cam_y + TILE, Thing::Fig(i)));
     }
-    // Figures, back to front so nearer ones overlap
-    let mut order: Vec<usize> = (0..cur.figures.len()).collect();
-    order.sort_by_key(|&i| cur.figures[i].y);
+    for (i, m) in cur.places.iter().enumerate() {
+        things.push(((m.y + m.h) * TILE - cam_y, Thing::Mark(i)));
+    }
+    things.sort_by_key(|(foot, thing)| (*foot, matches!(thing, Thing::Fig(_)) as i32));
+
+    let mut labels: Vec<(i32, i32, String, u32)> = Vec::new();
     let mut heads: Vec<(usize, i32, i32)> = Vec::new();
-    for i in order {
-        let fig = &cur.figures[i];
-        let before = prev.and_then(|s| {
-            s.figures
-                .iter()
-                .find(|p| p.name == fig.name && p.npc == fig.npc)
-        });
-        let (px, py) = lerp_pos(before, fig, t);
-        let moving = before
-            .map(|b| (b.x, b.y) != (fig.x, fig.y))
-            .unwrap_or(false)
-            && fig.doing == "walk";
-        draw_figure(f, fig, px, py, moving, phase);
-        heads.push((i, px + TILE / 2, py + TILE - 3 - 13 - 12));
+    for (_, thing) in things {
+        match thing {
+            Thing::Mark(i) => {
+                let m = &cur.places[i];
+                let (x, y) = (m.x * TILE - cam_x, m.y * TILE - cam_y);
+                let (w, h) = (m.w * TILE, m.h * TILE);
+                if x + w < -2 * TILE || x > f.w + 2 * TILE || y + h < -3 * TILE || y > f.h + TILE {
+                    continue;
+                }
+                if m.form == "banner" {
+                    if m.name == "Town" {
+                        arch::draw_structure(
+                            f,
+                            (x - TILE, y - TILE / 2, 3 * TILE, TILE + TILE / 2),
+                            "hall",
+                            None,
+                            true,
+                            1.0,
+                            ms,
+                        );
+                    }
+                    let color = m
+                        .resource
+                        .as_deref()
+                        .map(resource_color)
+                        .unwrap_or(0xd94a4a);
+                    draw_banner(f, x, y, color);
+                    labels.push((x + TILE / 2, y - 18, m.name.to_uppercase(), 0xf3f0e6));
+                } else {
+                    let top = arch::draw_structure(
+                        f,
+                        (x, y, w, h),
+                        &m.form,
+                        m.style.as_deref(),
+                        m.built,
+                        m.progress,
+                        ms,
+                    );
+                    let (text, ink) = if m.built {
+                        (m.name.to_uppercase(), 0xf3f0e6)
+                    } else {
+                        (format!("{} (SITE)", m.name.to_uppercase()), 0xe0b46c)
+                    };
+                    labels.push((x + w / 2, top - 18, text, ink));
+                }
+            }
+            Thing::Fig(i) => {
+                let fig = &cur.figures[i];
+                let (px, py) = at[i];
+                if px < -TILE || px > f.w + TILE || py < -2 * TILE || py > f.h + TILE {
+                    continue;
+                }
+                let moving = earlier(prev, fig)
+                    .map(|b| (b.x, b.y) != (fig.x, fig.y))
+                    .unwrap_or(false)
+                    && fig.doing == "walk";
+                let top = draw_figure(f, fig, px, py, moving, phase);
+                heads.push((i, px + TILE / 2, top));
+                let ink = if fig.me {
+                    0xfff2a8
+                } else if fig.npc {
+                    0xd9ccff
+                } else {
+                    0xf3f0e6
+                };
+                labels.push((px + TILE / 2, top - 18, fig.name.to_uppercase(), ink));
+            }
+        }
+    }
+    // Names over everything, so a wall never hides who is behind it.
+    for (cx, y, text, ink) in &labels {
+        let w = text_width(text, 2);
+        f.label(cx - w / 2, *y, text, *ink, 2);
     }
     // Speech, over whoever said it; the newest for each speaker wins.
     let mut spoken: Vec<&str> = Vec::new();
@@ -447,19 +591,80 @@ pub fn draw(f: &mut Frame, prev: Option<&Scene>, cur: &Scene, t: f32, ms: f64) {
             .iter()
             .find(|(i, _, _)| cur.figures[*i].name == b.name)
         {
-            draw_bubble(f, *hx, *hy - 4, &b.text);
+            draw_bubble(f, *hx, *hy - 22, &b.text);
             spoken.push(&b.name);
         }
     }
-    // Vignette so the edges of the world read as edges
-    for x in 0..f.w {
-        f.blend(x, 0, 0x000000, 90);
-        f.blend(x, f.h - 1, 0x000000, 90);
+    draw_minimap(f, cur, cam_x, cam_y, &at);
+}
+
+/// The whole map in the corner, with the window drawn on it.
+fn draw_minimap(f: &mut Frame, s: &Scene, cam_x: i32, cam_y: i32, at: &[(i32, i32)]) {
+    let k = 2;
+    let (mw, mh) = (s.w * k, s.h * k);
+    let (x0, y0) = (f.w - mw - 10, f.h - mh - 10);
+    f.shade_rect(x0 - 3, y0 - 3, mw + 6, mh + 6, 0x000000, 150);
+    f.fill_rect(x0 - 1, y0 - 1, mw + 2, mh + 2, 0x1b1f26);
+    for ty in 0..s.h {
+        for tx in 0..s.w {
+            f.fill_rect(
+                x0 + tx * k,
+                y0 + ty * k,
+                k,
+                k,
+                arch::shade(s.tile(tx, ty).base(), 0.8),
+            );
+        }
     }
-    for y in 0..f.h {
-        f.blend(0, y, 0x000000, 90);
-        f.blend(f.w - 1, y, 0x000000, 90);
+    for m in &s.places {
+        let c = if m.form == "banner" {
+            0xf3f0e6
+        } else if m.built {
+            0xffd27a
+        } else {
+            0xe0b46c
+        };
+        f.fill_rect(
+            x0 + m.x * k,
+            y0 + m.y * k,
+            (m.w * k).max(2),
+            (m.h * k).max(2),
+            c,
+        );
     }
+    for (i, fig) in s.figures.iter().enumerate() {
+        let (px, py) = at[i];
+        let (tx, ty) = ((px + cam_x) / TILE, (py + cam_y) / TILE);
+        let c = if fig.me {
+            0xfff2a8
+        } else if fig.npc {
+            0xb9a7d8
+        } else {
+            0xff6a6a
+        };
+        f.fill_rect(x0 + tx * k - 1, y0 + ty * k - 1, k + 2, k + 2, c);
+    }
+    // The window.
+    let (wx, wy) = (x0 + cam_x * k / TILE, y0 + cam_y * k / TILE);
+    let (ww, wh) = (f.w * k / TILE, f.h * k / TILE);
+    for x in wx..wx + ww {
+        f.blend(x, wy, 0xffffff, 160);
+        f.blend(x, wy + wh - 1, 0xffffff, 160);
+    }
+    for y in wy..wy + wh {
+        f.blend(wx, y, 0xffffff, 160);
+        f.blend(wx + ww - 1, y, 0xffffff, 160);
+    }
+}
+
+fn draw_banner(f: &mut Frame, x: i32, y: i32, color: u32) {
+    let u = TILE / 24;
+    let px = x + TILE / 2 - u;
+    f.shade_disc(px + u, y + TILE - 3 * u, 4 * u, 0x000000, 60);
+    f.fill_rect(px, y + 3 * u, 2 * u, TILE - 6 * u, 0x3b2a1a);
+    f.fill_rect(px + 2 * u, y + 4 * u, 8 * u, 5 * u, color);
+    f.fill_rect(px + 2 * u, y + 9 * u, 5 * u, 2 * u, color);
+    f.fill_rect(px + 2 * u, y + 4 * u, 8 * u, u, arch::lighten(color, 0.35));
 }
 
 fn draw_bubble(f: &mut Frame, cx: i32, bottom: i32, text: &str) {
@@ -467,35 +672,35 @@ fn draw_bubble(f: &mut Frame, cx: i32, bottom: i32, text: &str) {
     if lines.is_empty() {
         return;
     }
-    let w = lines.iter().map(|l| text_width(l, 1)).max().unwrap_or(0) + 8;
-    let h = lines.len() as i32 * 8 + 5;
-    let x = (cx - w / 2).clamp(1, f.w - w - 1);
-    let y = (bottom - h - 4).max(1);
-    f.shade_rect(x + 1, y + 1, w, h, 0x000000, 90);
+    let w = lines.iter().map(|l| text_width(l, 2)).max().unwrap_or(0) + 14;
+    let h = lines.len() as i32 * 16 + 10;
+    let x = (cx - w / 2).clamp(2, f.w - w - 2);
+    let y = (bottom - h - 6).max(2);
+    f.shade_rect(x + 2, y + 2, w, h, 0x000000, 90);
     f.fill_rect(x, y, w, h, 0xf6f1e4);
-    f.fill_rect(x + 1, y + 1, w - 2, h - 2, 0xfffdf6);
+    f.fill_rect(x + 2, y + 2, w - 4, h - 4, 0xfffdf6);
     // The tail toward the speaker.
-    f.fill_rect(cx - 2, y + h, 4, 1, 0xf6f1e4);
-    f.fill_rect(cx - 1, y + h + 1, 2, 1, 0xf6f1e4);
-    f.put(cx, y + h + 2, 0xf6f1e4);
+    f.fill_rect(cx - 4, y + h, 8, 2, 0xf6f1e4);
+    f.fill_rect(cx - 2, y + h + 2, 4, 2, 0xf6f1e4);
+    f.fill_rect(cx - 1, y + h + 4, 2, 2, 0xf6f1e4);
     for (i, line) in lines.iter().enumerate() {
-        f.text(x + 4, y + 3 + i as i32 * 8, line, 0x1b1f26, 1);
+        f.text(x + 7, y + 5 + i as i32 * 16, line, 0x1b1f26, 2);
     }
 }
 
-fn draw_tile(f: &mut Frame, s: &Scene, tx: i32, ty: i32, ms: f64) {
-    let x0 = tx * TILE;
-    let y0 = ty * TILE;
+fn draw_tile(f: &mut Frame, s: &Scene, tx: i32, ty: i32, x0: i32, y0: i32, ms: f64) {
+    if x0 + TILE < 0 || y0 + TILE < 0 || x0 >= f.w || y0 >= f.h {
+        return;
+    }
     let tile = s.tile(tx, ty);
-    let base = match tile {
-        Tile::Grass => 0x4f8a3f,
-        Tile::Water => 0x2c68a3,
-        Tile::Forest => 0x3e7534,
-        Tile::Hill => 0x8c8069,
-        Tile::Road => 0xb8a27b,
-        Tile::Town => 0x9a9791,
-    };
-    f.fill_rect(x0, y0, TILE, TILE, base);
+    let off_map = tx < 0 || ty < 0 || tx >= s.w || ty >= s.h;
+    f.fill_rect(
+        x0,
+        y0,
+        TILE,
+        TILE,
+        if off_map { 0x1f4a78 } else { tile.base() },
+    );
     match tile {
         Tile::Grass | Tile::Forest => {
             for yy in 0..TILE {
@@ -521,38 +726,40 @@ fn draw_tile(f: &mut Frame, s: &Scene, tx: i32, ty: i32, ms: f64) {
             for (dx, dy) in [(0, -1), (0, 1), (-1, 0), (1, 0)] {
                 if s.tile(tx + dx, ty + dy) == Tile::Water {
                     let (rx, ry, rw, rh) = match (dx, dy) {
-                        (0, -1) => (x0, y0, TILE, 3),
-                        (0, 1) => (x0, y0 + TILE - 3, TILE, 3),
-                        (-1, 0) => (x0, y0, 3, TILE),
-                        _ => (x0 + TILE - 3, y0, 3, TILE),
+                        (0, -1) => (x0, y0, TILE, 6),
+                        (0, 1) => (x0, y0 + TILE - 6, TILE, 6),
+                        (-1, 0) => (x0, y0, 6, TILE),
+                        _ => (x0 + TILE - 6, y0, 6, TILE),
                     };
                     f.shade_rect(rx, ry, rw, rh, 0xc9b58a, 120);
                 }
             }
             if tile == Tile::Forest {
                 let h = hash(tx, ty, 7);
-                let cx = x0 + 8 + (h % 9) as i32;
-                let cy = y0 + 9 + (h >> 4 % 7) as i32 % 6;
-                let r = 6 + (h >> 8) as i32 % 3;
-                f.shade_disc(cx + 2, cy + 3, r, 0x000000, 60);
-                f.fill_rect(cx - 1, cy + r - 2, 3, 5, 0x5a3a1e);
+                let cx = x0 + 14 + (h % 21) as i32;
+                let cy = y0 + 16 + ((h >> 4) % 13) as i32;
+                let r = 11 + ((h >> 8) % 4) as i32;
+                f.shade_disc(cx + 4, cy + 6, r, 0x000000, 60);
+                f.fill_rect(cx - 2, cy + r - 4, 5, 10, 0x5a3a1e);
                 f.disc(cx, cy, r, 0x2f6a2b);
-                f.disc(cx - 2, cy - 2, r - 3, 0x3f8a36);
+                f.disc(cx - 3, cy - 3, r - 5, 0x3f8a36);
+                f.disc(cx - 5, cy - 6, (r - 8).max(2), 0x4f9a42);
             }
         }
         Tile::Water => {
             let drift = (ms / 140.0) as i32;
+            let deep = off_map;
             for yy in 0..TILE {
                 let py = y0 + yy;
                 for xx in 0..TILE {
                     let px = x0 + xx;
                     let wave = (px + py * 3 + drift + (hash(0, py / 4, 3) % 5) as i32) % 17;
                     if wave == 0 {
-                        f.put(px, py, 0x4d8fca);
+                        f.put(px, py, if deep { 0x2a5a8a } else { 0x4d8fca });
                     } else if wave == 1 {
-                        f.put(px, py, 0x3d7ab8);
+                        f.put(px, py, if deep { 0x24507a } else { 0x3d7ab8 });
                     } else if hash(px, py, 4) % 41 == 0 {
-                        f.put(px, py, 0x245b91);
+                        f.put(px, py, if deep { 0x1a3f66 } else { 0x245b91 });
                     }
                 }
             }
@@ -569,11 +776,12 @@ fn draw_tile(f: &mut Frame, s: &Scene, tx: i32, ty: i32, ms: f64) {
                 }
             }
             let h = hash(tx, ty, 9);
-            let bx = x0 + 6 + (h % 8) as i32;
-            let by = y0 + 10 + (h >> 5) as i32 % 6;
-            f.shade_disc(bx + 1, by + 2, 5, 0x000000, 50);
-            f.disc(bx, by, 5, 0x7d7261);
-            f.disc(bx - 1, by - 2, 3, 0x9d917d);
+            let bx = x0 + 12 + (h % 20) as i32;
+            let by = y0 + 18 + ((h >> 5) % 12) as i32;
+            f.shade_disc(bx + 2, by + 4, 9, 0x000000, 50);
+            f.disc(bx, by, 9, 0x7d7261);
+            f.disc(bx - 2, by - 3, 6, 0x9d917d);
+            f.disc(bx - 4, by - 5, 3, 0xb5a994);
         }
         Tile::Road => {
             for yy in 0..TILE {
@@ -589,111 +797,97 @@ fn draw_tile(f: &mut Frame, s: &Scene, tx: i32, ty: i32, ms: f64) {
                 for xx in 0..TILE {
                     let px = x0 + xx;
                     let py = y0 + yy;
-                    if px % 6 == 0 || py % 6 == 0 {
+                    if (tx * TILE + xx) % 12 == 0 || (ty * TILE + yy) % 12 == 0 {
                         f.put(px, py, 0x7f7c76);
                     } else if hash(px, py, 8) % 17 == 0 {
                         f.put(px, py, 0xaaa79f);
                     }
                 }
             }
-            // Houses on the outer ring of town tiles, chosen by hash.
+            // Cottages on the outer ring of the square, chosen by hash.
             let ring = [(-1, 0), (1, 0), (0, -1), (0, 1)]
                 .iter()
                 .any(|(dx, dy)| s.tile(tx + dx, ty + dy) != Tile::Town);
             if ring && hash(tx, ty, 10) % 3 != 0 {
-                draw_house(f, x0 + 4, y0 + 5, hash(tx, ty, 11));
+                let style = ["", "", "red", "blue", "timber"][(hash(tx, ty, 11) % 5) as usize];
+                arch::draw_structure(
+                    f,
+                    (x0 + 4, y0 + 16, TILE - 8, TILE - 20),
+                    "hut",
+                    if style.is_empty() { None } else { Some(style) },
+                    true,
+                    1.0,
+                    ms,
+                );
             }
         }
     }
 }
 
-fn draw_house(f: &mut Frame, x: i32, y: i32, h: u32) {
-    let wall = [0xcbb89a, 0xd8c4a4, 0xbfa985][(h % 3) as usize];
-    let roof = [0x8a3a2a, 0x6d4a2b, 0x5a4a6a][(h >> 3 % 3) as usize % 3];
-    f.shade_rect(x + 2, y + 4, 16, 12, 0x000000, 50);
-    f.fill_rect(x, y + 5, 16, 9, wall);
-    for i in 0..5 {
-        f.fill_rect(x - 1 + i, y + 5 - i, 18 - 2 * i, 1, roof);
-    }
-    f.fill_rect(x + 6, y + 9, 4, 5, 0x4a3320);
-    f.fill_rect(x + 12, y + 8, 2, 2, 0xf3e6a0);
-}
-
-fn draw_hall(f: &mut Frame, x: i32, y: i32) {
-    // The town hall behind the banner: wider, a lantern either side.
-    f.shade_rect(x - 8, y + 6, 40, 16, 0x000000, 60);
-    f.fill_rect(x - 10, y + 6, 40, 14, 0xd6c3a2);
-    for i in 0..6 {
-        f.fill_rect(x - 11 + i, y + 6 - i, 42 - 2 * i, 1, 0x7a3a2a);
-    }
-    f.fill_rect(x + 7, y + 12, 6, 8, 0x4a3320);
-    f.fill_rect(x - 6, y + 10, 3, 3, 0xf3e6a0);
-    f.fill_rect(x + 23, y + 10, 3, 3, 0xf3e6a0);
-}
-
-fn draw_figure(f: &mut Frame, fig: &Figure, px: i32, py: i32, moving: bool, phase: f32) {
-    // Stand in the middle of the tile, feet near the bottom.
+/// One character. Returns the top of the head, for the name and the bubble.
+fn draw_figure(f: &mut Frame, fig: &Figure, px: i32, py: i32, moving: bool, phase: f32) -> i32 {
+    let u = TILE / 24;
     let cx = px + TILE / 2;
-    let feet = py + TILE - 3;
+    let feet = py + TILE - 3 * u;
     let bob = if moving && ((phase * 6.0) as i32) % 2 == 0 {
-        -1
+        -u
     } else {
         0
     };
     let color = if fig.npc { 0x6b5b95 } else { outfit(&fig.name) };
-    f.shade_disc(cx, feet, 5, 0x000000, 70);
+    f.shade_disc(cx, feet, 5 * u, 0x000000, 70);
     if fig.me {
-        f.ring(cx, feet, 7, 0xf2e28a);
+        f.ring(cx, feet, 7 * u, 0xf2e28a);
+        f.ring(cx, feet, 7 * u - 1, 0xf2e28a);
     }
-    let top = feet - 13 + bob;
+    let top = feet - 13 * u + bob;
     // Legs
     let stride = if moving {
-        ((phase * 6.0) as i32 % 2) * 2 - 1
+        (((phase * 6.0) as i32 % 2) * 2 - 1) * u
     } else {
         0
     };
-    f.fill_rect(cx - 3, top + 9, 2, 4 - bob, 0x2b2b33);
-    f.fill_rect(cx + 1 + stride, top + 9, 2, 4 - bob, 0x2b2b33);
+    f.fill_rect(cx - 3 * u, top + 9 * u, 2 * u, 4 * u - bob, 0x2b2b33);
+    f.fill_rect(cx + u + stride, top + 9 * u, 2 * u, 4 * u - bob, 0x2b2b33);
     // Body
-    f.fill_rect(cx - 3, top + 4, 7, 6, color);
-    f.fill_rect(cx - 3, top + 4, 7, 1, brighten(color));
+    f.fill_rect(cx - 3 * u, top + 4 * u, 7 * u, 6 * u, color);
+    f.fill_rect(cx - 3 * u, top + 4 * u, 7 * u, u, brighten(color));
+    f.fill_rect(cx + 3 * u, top + 4 * u, u, 6 * u, darken(color));
     // Head
-    f.disc(cx, top + 1, 3, if fig.npc { 0xd8b48a } else { 0xf1c9a5 });
+    f.disc(
+        cx,
+        top + u,
+        3 * u,
+        if fig.npc { 0xd8b48a } else { 0xf1c9a5 },
+    );
     if fig.npc {
         // A hood.
-        f.fill_rect(cx - 3, top - 3, 7, 3, 0x4a3f6b);
-        f.fill_rect(cx - 4, top - 1, 9, 1, 0x4a3f6b);
+        f.fill_rect(cx - 3 * u, top - 3 * u, 7 * u, 3 * u, 0x4a3f6b);
+        f.fill_rect(cx - 4 * u, top - u, 9 * u, u, 0x4a3f6b);
     } else {
-        f.fill_rect(cx - 3, top - 2, 7, 2, darken(color));
+        f.fill_rect(cx - 3 * u, top - 2 * u, 7 * u, 2 * u, darken(color));
     }
-    // A tool, swinging, when gathering.
-    if fig.doing == "gather" {
+    // A tool, swinging, when working.
+    if fig.doing == "gather" || fig.doing == "build" {
         let swing = (phase * 4.0).sin();
-        let hx = cx + 4;
-        let hy = top + 6;
+        let hx = cx + 4 * u;
+        let hy = top + 6 * u;
         let (tx, ty) = (
-            hx + (5.0 + swing * 2.0) as i32,
-            hy - (4.0 * swing) as i32 - 2,
+            hx + ((5.0 + swing * 2.0) * u as f32) as i32,
+            hy - (4.0 * swing * u as f32) as i32 - 2 * u,
         );
-        f.line(hx, hy, tx, ty, 0x5a3a1e);
-        let head = match fig.resource.as_deref() {
-            Some("fish") => 0x9ec7e8,
-            Some("wood") => 0xa9a9a9,
+        for i in 0..u {
+            f.line(hx + i, hy, tx + i, ty, 0x5a3a1e);
+        }
+        let head = match (fig.doing.as_str(), fig.resource.as_deref()) {
+            ("build", _) => 0x555a66,
+            (_, Some("fish")) => 0x9ec7e8,
+            (_, Some("wood")) => 0xa9a9a9,
             _ => 0x7a7a7a,
         };
-        f.fill_rect(tx - 1, ty - 1, 3, 3, head);
+        f.fill_rect(tx - u, ty - u, 3 * u, 3 * u, head);
     }
-    // Name
-    let label = fig.name.to_uppercase();
-    let w = text_width(&label, 1);
-    let ink = if fig.me {
-        0xfff2a8
-    } else if fig.npc {
-        0xd9ccff
-    } else {
-        0xf3f0e6
-    };
-    f.label(cx - w / 2, top - 12, &label, ink, 1);
+    top - 3 * u
 }
 
 fn brighten(c: u32) -> u32 {
@@ -874,7 +1068,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_scene_renders_without_panicking_and_paints_every_pixel() {
+    fn a_scene_renders_through_the_camera_and_paints_every_pixel() {
         let mut w = world::World::new(7);
         let me = w.join("Ada");
         w.apply(
@@ -892,6 +1086,35 @@ mod tests {
             },
         )
         .unwrap();
+        // A site waiting for stone, and a finished forge, both in the window.
+        w.apply(
+            me,
+            &world::Command::FoundPlace {
+                name: "Grey Spire".into(),
+                description: "d".into(),
+                resource: None,
+                skill: None,
+                form: world::Form::Spire,
+                style: Some("dark".into()),
+            },
+        )
+        .unwrap();
+        w.apply(
+            me,
+            &world::Command::FoundPlace {
+                name: "Anvil".into(),
+                description: "d".into(),
+                resource: None,
+                skill: None,
+                form: world::Form::Forge,
+                style: None,
+            },
+        )
+        .unwrap();
+        if let Some(pl) = w.places.iter_mut().find(|p| p.name == "Anvil") {
+            pl.needs.clear();
+            pl.work = 100;
+        }
         w.apply(
             me,
             &world::Command::Gather {
@@ -900,30 +1123,101 @@ mod tests {
             },
         )
         .unwrap();
-        for _ in 0..40 {
+        for _ in 0..12 {
             w.step();
         }
         let json = w.scene(Some(me));
         let scene = Scene::from_json(&json).expect("scene parses");
         assert_eq!(scene.figures.len(), 2);
         assert!(scene.figures[0].me);
-        assert_eq!(scene.w, scene.h, "the world is square");
-        let mut f = Frame::new(scene.w * TILE, scene.h * TILE);
+        let spire = scene
+            .places
+            .iter()
+            .find(|m| m.name == "Grey Spire")
+            .unwrap();
+        assert!(!spire.built() && spire.form == "spire" && spire.w == 2);
+        let mut f = Frame::new(VIEW, VIEW);
         draw(&mut f, None, &scene, 1.0, 1234.0);
-        assert!(f.px.chunks(4).all(|p| p[3] == 255));
-        let mut prev = scene.clone();
-        prev.figures[0].x -= 1;
-        draw(&mut f, Some(&prev), &scene, 0.5, 5678.0);
-        assert_eq!(text_width("ADA", 1), 18);
-        assert_eq!(
-            wrap(
-                "hello there, what a fine morning to be alive in this world",
-                22,
-                3
-            )
-            .len(),
-            3
+        assert!(
+            f.px.chunks(4).all(|p| p[3] == 255),
+            "every pixel is painted"
         );
-        assert_eq!(wrap("hi", 22, 3), vec!["hi".to_string()]);
+        if let Ok(path) = std::env::var("CQS_SNAP") {
+            std::fs::write(path, &f.px).unwrap();
+        }
+        // The camera keeps Ada in the window (in the middle unless the map
+        // edge clamps it), and a spectator's window holds Town.
+        let (cx, cy) = camera(&f, None, &scene, 1.0);
+        let ada = &scene.figures[0];
+        let (sx, sy) = (ada.x * TILE - cx, ada.y * TILE - cy);
+        assert!(sx >= 0 && sx < VIEW && sy >= 0 && sy < VIEW, "{sx},{sy}");
+        let spectator = Scene::from_json(&w.scene(None)).unwrap();
+        let (cx, cy) = camera(&f, None, &spectator, 1.0);
+        let town = spectator.places.iter().find(|m| m.name == "Town").unwrap();
+        let (sx, sy) = (town.x * TILE - cx, town.y * TILE - cy);
+        assert!(sx >= 0 && sx < VIEW && sy >= 0 && sy < VIEW, "{sx},{sy}");
+        // Every form draws, finished and rising, without panicking.
+        for form in [
+            "hut", "house", "hall", "tower", "spire", "forge", "mill", "shrine", "well",
+        ] {
+            for (built, progress) in [(true, 1.0), (false, 0.0), (false, 0.5)] {
+                arch::draw_structure(
+                    &mut f,
+                    (100, 100, 96, 96),
+                    form,
+                    Some("stone"),
+                    built,
+                    progress,
+                    500.0,
+                );
+            }
+        }
+    }
+
+    /// Every form, finished and rising, laid out on grass: for looking at.
+    /// `CQS_GALLERY=path cargo test -p web gallery` writes the raw frame.
+    #[test]
+    fn gallery() {
+        let Ok(path) = std::env::var("CQS_GALLERY") else {
+            return;
+        };
+        let mut f = Frame::new(VIEW, VIEW);
+        f.fill_rect(0, 0, VIEW, VIEW, 0x4f8a3f);
+        let forms = [
+            "hut", "house", "hall", "tower", "spire", "forge", "mill", "shrine", "well",
+        ];
+        let styles = [None, Some("stone"), Some("dark"), Some("purple")];
+        for (row, style) in styles.iter().enumerate() {
+            let y = 150 + row as i32 * 180;
+            let mut x = 20;
+            for form in forms {
+                let w = if form == "hall" {
+                    3
+                } else if matches!(form, "hut" | "shrine" | "well") {
+                    1
+                } else {
+                    2
+                };
+                let h = if matches!(form, "hut" | "shrine" | "well") {
+                    1
+                } else {
+                    2
+                };
+                let (built, progress) = if row == 3 { (false, 0.55) } else { (true, 1.0) };
+                let top = arch::draw_structure(
+                    &mut f,
+                    (x, y - h * 36, w * 36, h * 36),
+                    form,
+                    *style,
+                    built,
+                    progress,
+                    700.0,
+                );
+                let label = form.to_uppercase();
+                f.label(x, top - 12, &label, 0xf3f0e6, 1);
+                x += w * 36 + 14;
+            }
+        }
+        std::fs::write(path, &f.px).unwrap();
     }
 }

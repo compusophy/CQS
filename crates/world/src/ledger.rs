@@ -13,7 +13,7 @@
 
 use gemini::{arr, obj, Value};
 
-use crate::{Command, NpcId, PlayerId, World};
+use crate::{Command, Form, NpcId, PlayerId, World};
 
 /// The most seconds a world advances across one gap between events.
 pub const GAP_CAP_SECS: u64 = 600;
@@ -144,11 +144,13 @@ impl Command {
             Command::Stop => obj! {"c" => "stop"},
             Command::SaveRecipe { name } => obj! {"c" => "save", "name" => name.as_str()},
             Command::RunRecipe { name, forever } => obj! {"c" => "run", "name" => name.as_str(), "forever" => *forever},
-            Command::FoundPlace { name, description, resource, skill } => {
-                obj! {"c" => "found", "name" => name.as_str(), "description" => description.as_str()}
+            Command::FoundPlace { name, description, resource, skill, form, style } => {
+                obj! {"c" => "found", "name" => name.as_str(), "description" => description.as_str(), "form" => form.name()}
                     .with_opt("resource", resource.as_deref())
                     .with_opt("skill", skill.as_deref())
+                    .with_opt("style", style.as_deref())
             }
+            Command::Build { site } => obj! {"c" => "build", "site" => site.as_str()},
             Command::CreateNpc { name, persona } => obj! {"c" => "npc", "name" => name.as_str(), "persona" => persona.as_str()},
             Command::SetScript { source } => obj! {"c" => "script", "source" => source.as_str()},
         }
@@ -184,7 +186,10 @@ impl Command {
                 description: text("description"),
                 resource: opt("resource"),
                 skill: opt("skill"),
+                form: Form::parse(&text("form")).unwrap_or(Form::Banner),
+                style: opt("style"),
             },
+            Some("build") => Command::Build { site: text("site") },
             Some("npc") => Command::CreateNpc {
                 name: text("name"),
                 persona: text("persona"),
@@ -445,6 +450,11 @@ mod tests {
                 description: "d".into(),
                 resource: Some("mushrooms".into()),
                 skill: None,
+                form: Form::Spire,
+                style: Some("dark".into()),
+            },
+            Command::Build {
+                site: "Damp Hollow".into(),
             },
             Command::CreateNpc {
                 name: "Wren".into(),

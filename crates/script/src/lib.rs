@@ -18,7 +18,7 @@ use piccolo::{
     Callback, CallbackReturn, Closure, Context, Error as LuaError, Executor, Fuel, Lua, Stack,
     Table, Value as Lv,
 };
-use world::Command;
+use world::{Command, Form};
 
 /// Instructions one run may spend.
 pub const FUEL: i32 = 200_000;
@@ -109,6 +109,13 @@ pub fn run(source: &str, status: &Value, scene: &Value, memory: &Value) -> Outco
                     description: arg_str(st, 1).unwrap_or_default(),
                     resource: arg_str(st, 2),
                     skill: arg_str(st, 3),
+                    form: Form::parse(&arg_str(st, 4).unwrap_or_default()).unwrap_or(Form::Banner),
+                    style: arg_str(st, 5),
+                })
+            });
+            command(ctx, "build", cmds.clone(), |st| {
+                Ok(Command::Build {
+                    site: arg_str(st, 0).ok_or("build needs a site")?,
                 })
             });
             command(ctx, "npc", cmds.clone(), |st| {
@@ -300,6 +307,7 @@ fn places_json(scene: &Value, mx: i32, my: i32) -> Value {
                 obj! {
                     "name" => p.get("name").clone(), "x" => x, "y" => y,
                     "resource" => p.get("resource").clone(),
+                    "form" => p.get("form").clone(), "built" => p.get("built").clone(),
                     "distance" => chebyshev(mx, my, x, y),
                 }
             })

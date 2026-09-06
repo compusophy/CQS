@@ -5,7 +5,9 @@ use std::collections::VecDeque;
 
 use gemini::{arr, obj, Value};
 
-use crate::{Command, Event, Npc, NpcId, Place, Player, PlayerId, Speech, Task, Tile, World, H, W};
+use crate::{
+    Command, Event, Form, Npc, NpcId, Place, Player, PlayerId, Speech, Task, Tile, World, H, W,
+};
 
 const EVENTS_KEPT: usize = 40;
 
@@ -40,6 +42,7 @@ impl Task {
                 got,
             } => obj! {"t" => "gather", "resource" => resource.as_str(), "got" => *got}
                 .with_opt("want", *want),
+            Task::Build { site } => obj! {"t" => "build", "site" => site.as_str()},
         }
     }
     fn from_json(v: &Value) -> Result<Task, String> {
@@ -60,6 +63,9 @@ impl Task {
                 want: v.get("want").as_u32(),
                 got: v.get("got").as_u32().unwrap_or(0),
             },
+            Some("build") => Task::Build {
+                site: v.get("site").to_text(),
+            },
             other => return Err(format!("unknown task {other:?}")),
         })
     }
@@ -77,8 +83,20 @@ impl World {
             .places
             .iter()
             .map(|p| {
-                obj! {"name" => p.name.as_str(), "x" => p.x, "y" => p.y}
-                    .with_opt("resource", p.resource.as_deref())
+                let (w, h) = p.size();
+                let total = p.form.work().max(1);
+                let progress = if !p.needs.is_empty() {
+                    0.0
+                } else {
+                    (p.work.min(total) as f64) / (total as f64)
+                };
+                obj! {
+                    "name" => p.name.as_str(), "x" => p.x, "y" => p.y,
+                    "form" => p.form.name(), "w" => w, "h" => h,
+                    "built" => p.built(), "progress" => progress,
+                }
+                .with_opt("resource", p.resource.as_deref())
+                .with_opt("style", p.style.as_deref())
             })
             .collect();
         let npcs: Vec<Value> = self
@@ -94,6 +112,7 @@ impl World {
                     Task::Idle => ("idle", None),
                     Task::Walk { .. } => ("walk", None),
                     Task::Gather { resource, .. } => ("gather", Some(resource.as_str())),
+                    Task::Build { .. } => ("build", None),
                 };
                 obj! {"name" => p.name.as_str(), "x" => p.x, "y" => p.y, "doing" => doing, "me" => Some(p.id) == me}
                     .with_opt("resource", res)
@@ -144,6 +163,7 @@ impl World {
                 want: None,
                 got,
             } => format!("gathering {resource} ({got} so far)"),
+            Task::Build { site } => format!("building {site}"),
         };
         let mut then: Vec<String> = p.queue.iter().map(|c| c.to_string()).collect();
         if let Some((rname, _)) = &p.looping {
@@ -184,10 +204,14 @@ impl World {
             .places
             .iter()
             .map(|p| {
-                obj! {"name" => p.name.as_str(), "x" => p.x, "y" => p.y, "description" => p.description.as_str()}
-                    .with_opt("resource", p.resource.as_deref())
-                    .with_opt("skill", p.skill.as_deref())
-                    .with_opt("founder", p.founder.map(|f| f.0))
+                obj! {
+                    "name" => p.name.as_str(), "x" => p.x, "y" => p.y, "description" => p.description.as_str(),
+                    "form" => p.form.name(), "needs" => list(&p.needs), "work" => p.work,
+                }
+                .with_opt("resource", p.resource.as_deref())
+                .with_opt("skill", p.skill.as_deref())
+                .with_opt("founder", p.founder.map(|f| f.0))
+                .with_opt("style", p.style.as_deref())
             })
             .collect();
         let npcs: Vec<Value> = self
@@ -280,6 +304,10 @@ impl World {
                     skill: p.get("skill").as_str().map(str::to_string),
                     description: p.get("description").to_text(),
                     founder: p.get("founder").as_u32().map(PlayerId),
+                    form: Form::parse(p.get("form").as_str().unwrap_or("")).unwrap_or(Form::Banner),
+                    style: p.get("style").as_str().map(str::to_string),
+                    needs: unlist(p.get("needs"))?,
+                    work: p.get("work").as_u32().unwrap_or(0),
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -347,6 +375,7 @@ impl World {
                     Some("voice") => "voice",
                     Some("join") => "join",
                     Some("script") => "script",
+                    Some("build") => "build",
                     _ => "note",
                 },
             })

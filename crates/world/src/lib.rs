@@ -96,6 +96,210 @@ pub struct Place {
     pub skill: Option<String>,
     pub description: String,
     pub founder: Option<PlayerId>,
+    /// What stands here: a banner on a spot, or a building with a footprint.
+    pub form: Form,
+    /// One word for its look ("stone", "dark", "red"), for the display.
+    pub style: Option<String>,
+    /// Materials still owed before the work can start.
+    pub needs: Vec<(String, u32)>,
+    /// Ticks of work done so far; `form.work()` of them finish it.
+    pub work: u32,
+}
+
+impl Place {
+    /// The footprint in tiles; (x, y) is its top-left corner.
+    pub fn size(&self) -> (i32, i32) {
+        self.form.size()
+    }
+    pub fn covers(&self, x: i32, y: i32) -> bool {
+        let (w, h) = self.size();
+        x >= self.x && y >= self.y && x < self.x + w && y < self.y + h
+    }
+    /// Chebyshev distance from a tile to the footprint; 0 inside it.
+    pub fn dist(&self, x: i32, y: i32) -> i32 {
+        let (w, h) = self.size();
+        let dx = if x < self.x {
+            self.x - x
+        } else if x >= self.x + w {
+            x - (self.x + w - 1)
+        } else {
+            0
+        };
+        let dy = if y < self.y {
+            self.y - y
+        } else if y >= self.y + h {
+            y - (self.y + h - 1)
+        } else {
+            0
+        };
+        dx.max(dy)
+    }
+    /// Standing here counts as being at the place: beside a banner, or
+    /// within two tiles of a building's walls (its door is one tile out, and
+    /// arriving beside the door is arriving).
+    pub fn near(&self, x: i32, y: i32) -> bool {
+        self.dist(x, y) <= if self.form.blocks() { 2 } else { 1 }
+    }
+    pub fn built(&self) -> bool {
+        self.needs.is_empty() && self.work >= self.form.work()
+    }
+    /// Solid: nobody walks through a wall.
+    pub fn blocks(&self, x: i32, y: i32) -> bool {
+        self.form.blocks() && self.covers(x, y)
+    }
+    /// Where to stand to be at it: the tile below the middle of the front.
+    pub fn door(&self) -> (i32, i32) {
+        let (w, h) = self.size();
+        if self.form.blocks() {
+            (self.x + w / 2, self.y + h)
+        } else {
+            (self.x, self.y)
+        }
+    }
+    /// The middle of the footprint, for bearings.
+    pub fn centre(&self) -> (i32, i32) {
+        let (w, h) = self.size();
+        (self.x + w / 2, self.y + h / 2)
+    }
+    /// "needs 40 stone, 10 wood".
+    pub fn bill(&self) -> String {
+        self.needs
+            .iter()
+            .map(|(r, n)| format!("{n} {r}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// What a founded place is: a banner on a spot, free and instant, or a
+/// building with a footprint, a bill of materials, and work to raise it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Form {
+    Banner,
+    Hut,
+    House,
+    Hall,
+    Tower,
+    Spire,
+    Forge,
+    Mill,
+    Shrine,
+    Well,
+}
+
+impl Form {
+    pub const ALL: [Form; 10] = [
+        Form::Banner,
+        Form::Hut,
+        Form::House,
+        Form::Hall,
+        Form::Tower,
+        Form::Spire,
+        Form::Forge,
+        Form::Mill,
+        Form::Shrine,
+        Form::Well,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            Form::Banner => "banner",
+            Form::Hut => "hut",
+            Form::House => "house",
+            Form::Hall => "hall",
+            Form::Tower => "tower",
+            Form::Spire => "spire",
+            Form::Forge => "forge",
+            Form::Mill => "mill",
+            Form::Shrine => "shrine",
+            Form::Well => "well",
+        }
+    }
+    /// What people call things, mapped onto the forms the world can raise.
+    pub fn parse(s: &str) -> Option<Form> {
+        let s = s.trim().to_ascii_lowercase();
+        Some(match s.as_str() {
+            "" | "banner" | "spot" | "camp" | "clearing" | "flag" | "site" | "landing" => {
+                Form::Banner
+            }
+            "hut" | "cabin" | "shack" | "cottage" | "hovel" | "lodge" | "hovel " => Form::Hut,
+            "house" | "home" | "inn" | "tavern" | "shop" | "smokehouse" | "workshop" | "store" => {
+                Form::House
+            }
+            "hall" | "manor" | "keep" | "castle" | "palace" | "barracks" | "guildhall"
+            | "library" | "townhall" | "town hall" => Form::Hall,
+            "tower" | "watchtower" | "lighthouse" | "belltower" | "bell tower" => Form::Tower,
+            "spire" | "wizard tower" | "wizard's tower" | "wizards tower" | "mage tower"
+            | "observatory" | "wizard's spire" => Form::Spire,
+            "forge" | "smithy" | "blacksmith" | "foundry" | "furnace" | "smith" => Form::Forge,
+            "mill" | "windmill" | "watermill" | "sawmill" | "lumbermill" | "lumber mill" => {
+                Form::Mill
+            }
+            "shrine" | "temple" | "altar" | "chapel" | "church" | "monument" => Form::Shrine,
+            "well" | "fountain" | "cistern" => Form::Well,
+            _ => return None,
+        })
+    }
+    /// Footprint in tiles.
+    pub fn size(self) -> (i32, i32) {
+        match self {
+            Form::Banner | Form::Hut | Form::Shrine | Form::Well => (1, 1),
+            Form::Hall => (3, 2),
+            _ => (2, 2),
+        }
+    }
+    pub fn blocks(self) -> bool {
+        self != Form::Banner
+    }
+    /// The bill of materials, in resources the seeded world yields.
+    pub fn cost(self) -> &'static [(&'static str, u32)] {
+        match self {
+            Form::Banner => &[],
+            Form::Hut => &[("wood", 8)],
+            Form::House => &[("wood", 20), ("stone", 6)],
+            Form::Hall => &[("wood", 40), ("stone", 30)],
+            Form::Tower => &[("stone", 40), ("wood", 10)],
+            Form::Spire => &[("stone", 50), ("iron", 12), ("gold", 4)],
+            Form::Forge => &[("stone", 20), ("iron", 8)],
+            Form::Mill => &[("wood", 30), ("stone", 10)],
+            Form::Shrine => &[("stone", 14), ("gold", 2)],
+            Form::Well => &[("stone", 10)],
+        }
+    }
+    /// Ticks of work once the materials are on site.
+    pub fn work(self) -> u32 {
+        match self {
+            Form::Banner => 0,
+            Form::Hut => 8,
+            Form::House => 15,
+            Form::Hall => 30,
+            Form::Tower => 25,
+            Form::Spire => 40,
+            Form::Forge => 20,
+            Form::Mill => 20,
+            Form::Shrine => 12,
+            Form::Well => 8,
+        }
+    }
+    /// The cost table as one line, for whoever plans the gathering.
+    pub fn costs_text() -> String {
+        Form::ALL
+            .iter()
+            .filter(|f| **f != Form::Banner)
+            .map(|f| {
+                let (w, h) = f.size();
+                format!(
+                    "{} ({w}x{h}: {})",
+                    f.name(),
+                    f.cost()
+                        .iter()
+                        .map(|(r, n)| format!("{n} {r}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -121,6 +325,10 @@ pub enum Task {
         resource: String,
         want: Option<u32>,
         got: u32,
+    },
+    /// Raising a building whose materials are all on site.
+    Build {
+        site: String,
     },
 }
 
@@ -174,6 +382,13 @@ fn add(list: &mut Vec<(String, u32)>, key: &str, n: u32) {
     }
 }
 
+fn take(list: &mut Vec<(String, u32)>, key: &str, n: u32) {
+    if let Some(slot) = list.iter_mut().find(|(k, _)| k == key) {
+        slot.1 = slot.1.saturating_sub(n);
+    }
+    list.retain(|(_, n)| *n > 0);
+}
+
 /// Everything a character can be told to do. Plain data: serializable,
 /// replayable, and the whole surface the model is allowed to touch.
 #[derive(Clone, Debug, PartialEq)]
@@ -197,13 +412,18 @@ pub enum Command {
     SaveRecipe { name: String },
     /// Queue a saved recipe, once or forever.
     RunRecipe { name: String, forever: bool },
-    /// Found a named place where the character stands.
+    /// Found a named place where the character stands: a banner, or a
+    /// building marked out with a bill of materials.
     FoundPlace {
         name: String,
         description: String,
         resource: Option<String>,
         skill: Option<String>,
+        form: Form,
+        style: Option<String>,
     },
+    /// Carry materials to a site and work on it until it stands.
+    Build { site: String },
     /// Bring a character into the world where the player stands.
     CreateNpc { name: String, persona: String },
     /// Set the standing Lua script; an empty source clears it.
@@ -218,6 +438,7 @@ impl Command {
             Command::MoveTo { .. }
                 | Command::Gather { .. }
                 | Command::Bank
+                | Command::Build { .. }
                 | Command::RunRecipe { .. }
                 | Command::Stop
         )
@@ -226,7 +447,11 @@ impl Command {
     fn is_step(&self) -> bool {
         matches!(
             self,
-            Command::MoveTo { .. } | Command::Gather { .. } | Command::Bank | Command::Say { .. }
+            Command::MoveTo { .. }
+                | Command::Gather { .. }
+                | Command::Bank
+                | Command::Build { .. }
+                | Command::Say { .. }
         )
     }
 }
@@ -257,6 +482,7 @@ impl fmt::Display for Command {
                 forever: false,
             } => write!(f, "run {name}"),
             Command::FoundPlace { name, .. } => write!(f, "found {name}"),
+            Command::Build { site } => write!(f, "build {site}"),
             Command::CreateNpc { name, .. } => write!(f, "create {name}"),
             Command::SetScript { source } if source.trim().is_empty() => write!(f, "clear script"),
             Command::SetScript { .. } => write!(f, "set script"),
@@ -457,6 +683,10 @@ impl World {
                 skill: res.map(|(_, s)| s.into()),
                 description: desc.into(),
                 founder: None,
+                form: Form::Banner,
+                style: None,
+                needs: Vec::new(),
+                work: 0,
             };
         let mut places = vec![
             seeded(
@@ -592,7 +822,20 @@ impl World {
             })
     }
     pub fn place_at(&self, x: i32, y: i32) -> Option<&Place> {
-        self.places.iter().find(|p| near(p.x, p.y, x, y))
+        self.places.iter().find(|p| p.near(x, y))
+    }
+    /// Water, or a building: nobody walks here.
+    fn blocked(&self, x: i32, y: i32) -> bool {
+        !self.tile(x, y).walkable() || self.places.iter().any(|p| p.blocks(x, y))
+    }
+    /// The tile to walk to for a place: its door, or the nearest open tile.
+    fn approach(&self, p: &Place) -> (i32, i32) {
+        let (dx, dy) = p.door();
+        if dx >= 0 && dy >= 0 && dx < W && dy < H && !self.blocked(dx, dy) {
+            (dx, dy)
+        } else {
+            self.free_spot_near(dx, dy, None)
+        }
     }
     /// The nearest place yielding `resource` (singular or plural).
     fn source_of(&self, resource: &str, from: (i32, i32)) -> Option<&Place> {
@@ -636,33 +879,45 @@ impl World {
             .retain(|s| !(s.listener == npc && s.tick == for_tick));
     }
 
-    /// The nearest walkable tile to (x, y), within five tiles, that keeps at
-    /// least three tiles from every existing place: where a new place goes.
-    fn place_spot(&self, x: i32, y: i32) -> Option<(i32, i32)> {
+    /// The nearest spot to (x, y), within six tiles, where a footprint of
+    /// `size` fits: open ground, a tile of gap from every other place, and
+    /// nobody but the founder standing on it. Where a new place goes.
+    fn place_spot(&self, x: i32, y: i32, size: (i32, i32), who: PlayerId) -> Option<(i32, i32)> {
+        let (w, h) = size;
         let mut best: Option<((i32, i32), i32)> = None;
-        for dy in -5..=5i32 {
-            for dx in -5..=5i32 {
-                let (cx, cy) = (x + dx, y + dy);
-                if cx < 0 || cy < 0 || cx >= W || cy >= H || !self.tile(cx, cy).walkable() {
+        for dy in -6..=6i32 {
+            for dx in -6..=6i32 {
+                let (ax, ay) = (x + dx - w / 2, y + dy - h / 2);
+                if ax < 0 || ay < 0 || ax + w > W || ay + h > H {
                     continue;
                 }
-                if self
-                    .places
-                    .iter()
-                    .any(|p| (p.x - cx).abs() <= 2 && (p.y - cy).abs() <= 2)
-                {
+                let mut fits = true;
+                'tiles: for ty in ay..ay + h {
+                    for tx in ax..ax + w {
+                        let t = self.tile(tx, ty);
+                        if !t.walkable()
+                            || t == Tile::Town
+                            || self.places.iter().any(|p| p.dist(tx, ty) <= 1)
+                            || self.occupied(tx, ty, Some(who))
+                        {
+                            fits = false;
+                            break 'tiles;
+                        }
+                    }
+                }
+                if !fits {
                     continue;
                 }
                 let d = dx.abs() + dy.abs();
                 if best.map_or(true, |(_, bd)| d < bd) {
-                    best = Some(((cx, cy), d));
+                    best = Some(((ax, ay), d));
                 }
             }
         }
         best.map(|(at, _)| at)
     }
 
-    /// Players whose standing script should run now: idle, nothing queued,
+    /// Players whose standing script should run now: idle, nothing queued,    /// Players whose standing script should run now: idle, nothing queued,
     /// no recipe on repeat, and not already run this tick.
     pub fn scripted_idle(&self) -> Vec<PlayerId> {
         self.players
@@ -747,7 +1002,7 @@ impl World {
                     if tx < 0 || ty < 0 || tx >= W || ty >= H {
                         continue;
                     }
-                    if !self.tile(tx, ty).walkable() || self.occupied(tx, ty, except) {
+                    if self.blocked(tx, ty) || self.occupied(tx, ty, except) {
                         continue;
                     }
                     let d = dx * dx + dy * dy;
@@ -877,7 +1132,8 @@ impl World {
                     )
                 })?;
                 let res = src.resource.clone().unwrap();
-                let here = near(src.x, src.y, px, py);
+                let here = src.near(px, py);
+                let to = self.approach(&src);
                 let me = self.player_mut(who).unwrap();
                 if here {
                     me.task = Task::Gather {
@@ -889,7 +1145,7 @@ impl World {
                     Ok(format!("{name} begins gathering {res} at {}.", src.name))
                 } else {
                     me.task = Task::Walk {
-                        to: (src.x, src.y),
+                        to,
                         then: Some(Box::new(Command::Gather {
                             resource: res.clone(),
                             amount: *amount,
@@ -901,7 +1157,7 @@ impl World {
             }
             Command::Bank => {
                 let town = self.places[0].clone();
-                if near(town.x, town.y, px, py) {
+                if town.near(px, py) {
                     let me = self.player_mut(who).unwrap();
                     let carried = std::mem::take(&mut me.inventory);
                     if carried.is_empty() {
@@ -916,8 +1172,9 @@ impl World {
                     self.note(&name, format!("banked {summary}"));
                     Ok(format!("{name} deposits {summary}."))
                 } else {
+                    let to = self.approach(&town);
                     self.player_mut(who).unwrap().task = Task::Walk {
-                        to: (town.x, town.y),
+                        to,
                         then: Some(Box::new(Command::Bank)),
                     };
                     self.note(&name, "set out for Town to bank");
@@ -1055,6 +1312,8 @@ impl World {
                 description,
                 resource,
                 skill,
+                form,
+                style,
             } => {
                 let pname = clean_name(pname)?;
                 if self
@@ -1064,11 +1323,6 @@ impl World {
                 {
                     return Err(format!("there is already a place called {pname}"));
                 }
-                // A place needs room. The world finds the nearest tile with
-                // room rather than sending the founder off to look for one.
-                let Some((sx, sy)) = self.place_spot(px, py) else {
-                    return Err("no room for a place here; everything nearby is taken".into());
-                };
                 let mine = self
                     .places
                     .iter()
@@ -1079,6 +1333,16 @@ impl World {
                         "{MAX_PLACES_PER_PLAYER} places founded is the limit"
                     ));
                 }
+                let form = *form;
+                // A place needs room: the nearest spot its footprint fits with
+                // a gap from everything else. The world finds it rather than
+                // sending the founder off to look for one.
+                let Some((sx, sy)) = self.place_spot(px, py, form.size(), who) else {
+                    return Err(format!(
+                        "no room for a {} here; somewhere more open",
+                        form.name()
+                    ));
+                };
                 let resource = resource
                     .as_deref()
                     .filter(|r| !r.trim().is_empty())
@@ -1089,8 +1353,18 @@ impl World {
                     (Some(_), Some(s)) if !s.trim().is_empty() => Some(clean_word(s)?),
                     (Some(_), _) => Some("gathering".to_string()),
                 };
+                let style = style
+                    .as_deref()
+                    .filter(|s| !s.trim().is_empty())
+                    .map(clean_word)
+                    .transpose()?;
                 let description = tidy(description, TEXT_MAX);
-                self.places.push(Place {
+                let needs: Vec<(String, u32)> = form
+                    .cost()
+                    .iter()
+                    .map(|(r, n)| (r.to_string(), *n))
+                    .collect();
+                let place = Place {
                     name: pname.clone(),
                     x: sx,
                     y: sy,
@@ -1098,18 +1372,144 @@ impl World {
                     skill,
                     description,
                     founder: Some(who),
-                });
-                let where_ = if (sx, sy) == (px, py) {
+                    form,
+                    style,
+                    needs,
+                    work: 0,
+                };
+                let d = place.dist(px, py);
+                let (cx, cy) = place.centre();
+                let bill = place.bill();
+                self.places.push(place.clone());
+                // Nobody stands inside a wall: whoever was on the footprint
+                // steps off it.
+                let inside: Vec<PlayerId> = self
+                    .players
+                    .iter()
+                    .filter(|p| place.blocks(p.x, p.y))
+                    .map(|p| p.id)
+                    .collect();
+                for id in inside {
+                    let (fx, fy) = self.free_spot_near(cx, cy, Some(id));
+                    let p = self.player_mut(id).unwrap();
+                    p.x = fx;
+                    p.y = fy;
+                }
+                let where_ = if d == 0 {
                     String::new()
                 } else {
-                    let d = (sx - px).abs().max((sy - py).abs());
-                    format!(", {d} {}", compass(px, py, sx, sy))
+                    format!(", {d} {}", compass(px, py, cx, cy))
                 };
-                self.note(&name, format!("founded {pname}{where_}"));
-                Ok(match resource {
-                    Some(r) => format!("{name} founds {pname}{where_}. It yields {r}."),
-                    None => format!("{name} founds {pname}{where_}."),
-                })
+                if form == Form::Banner {
+                    self.note(&name, format!("founded {pname}{where_}"));
+                    Ok(match resource {
+                        Some(r) => format!("{name} founds {pname}{where_}. It yields {r}."),
+                        None => format!("{name} founds {pname}{where_}."),
+                    })
+                } else {
+                    self.note_kind(
+                        "build",
+                        &name,
+                        format!(
+                            "marked out {pname}, a {}{where_}; it needs {bill}",
+                            form.name()
+                        ),
+                    );
+                    Ok(format!(
+                        "{name} marks out {pname}, a {}{where_}. It needs {bill}: carry the materials there and build.",
+                        form.name()
+                    ))
+                }
+            }
+            Command::Build { site } => {
+                let site = self.place(site).cloned().ok_or_else(|| {
+                    let sites: Vec<&str> = self
+                        .places
+                        .iter()
+                        .filter(|p| !p.built())
+                        .map(|p| p.name.as_str())
+                        .collect();
+                    format!(
+                        "there is no site called '{site}'. Unfinished: {}",
+                        if sites.is_empty() {
+                            "none".to_string()
+                        } else {
+                            sites.join(", ")
+                        }
+                    )
+                })?;
+                if site.built() {
+                    return Err(format!("{} is already built", site.name));
+                }
+                if !site.near(px, py) {
+                    let to = self.approach(&site);
+                    self.player_mut(who).unwrap().task = Task::Walk {
+                        to,
+                        then: Some(Box::new(Command::Build {
+                            site: site.name.clone(),
+                        })),
+                    };
+                    self.note(&name, format!("set out for {} to build", site.name));
+                    return Ok(format!("{name} heads for {} to build.", site.name));
+                }
+                // Hand over whatever is carried and owed.
+                let idx = self
+                    .places
+                    .iter()
+                    .position(|p| p.name == site.name)
+                    .unwrap();
+                let carried = self.player(who).unwrap().inventory.clone();
+                let delivered: Vec<(String, u32)> = site
+                    .needs
+                    .iter()
+                    .filter_map(|(r, owed)| {
+                        let give = count(&carried, r).min(*owed);
+                        (give > 0).then(|| (r.clone(), give))
+                    })
+                    .collect();
+                if !delivered.is_empty() {
+                    let me = self.player_mut(who).unwrap();
+                    for (r, n) in &delivered {
+                        take(&mut me.inventory, r, *n);
+                    }
+                    let pl = &mut self.places[idx];
+                    for (r, n) in &delivered {
+                        if let Some(slot) = pl.needs.iter_mut().find(|(k, _)| k == r) {
+                            slot.1 -= n;
+                        }
+                    }
+                    pl.needs.retain(|(_, n)| *n > 0);
+                    let list: Vec<String> =
+                        delivered.iter().map(|(r, n)| format!("{n} {r}")).collect();
+                    self.note_kind(
+                        "build",
+                        &name,
+                        format!("delivered {} to {}", list.join(", "), site.name),
+                    );
+                }
+                let pl = self.places[idx].clone();
+                if !pl.needs.is_empty() {
+                    let bill = pl.bill();
+                    if delivered.is_empty() {
+                        return Err(format!(
+                            "{} still needs {bill}; gather it and carry it here",
+                            pl.name
+                        ));
+                    }
+                    return Ok(format!(
+                        "{name} delivers to {}. It still needs {bill}.",
+                        pl.name
+                    ));
+                }
+                self.player_mut(who).unwrap().task = Task::Build {
+                    site: pl.name.clone(),
+                };
+                self.note_kind("build", &name, format!("began building {}", pl.name));
+                Ok(format!(
+                    "{name} begins building {} ({} ticks of work).",
+                    pl.name,
+                    pl.form.work().saturating_sub(pl.work)
+                ))
             }
             Command::CreateNpc {
                 name: nname,
@@ -1189,7 +1589,7 @@ impl World {
             return Some(((p.x, p.y), p.name.clone()));
         }
         if let Some(p) = self.place(target) {
-            return Some(((p.x, p.y), p.name.clone()));
+            return Some((self.approach(p), p.name.clone()));
         }
         let t = q
             .trim_start_matches("go ")
@@ -1232,7 +1632,7 @@ impl World {
         for step in (1..=most).rev() {
             let x = (from.0 + dx * step).clamp(0, W - 1);
             let y = (from.1 + dy * step).clamp(0, H - 1);
-            if self.tile(x, y).walkable() {
+            if !self.blocked(x, y) {
                 return Some(((x, y), format!("{step} tiles {dir}")));
             }
         }
@@ -1297,8 +1697,7 @@ impl World {
                         .places
                         .iter()
                         .find(|pl| {
-                            near(pl.x, pl.y, p.x, p.y)
-                                && pl.resource.as_deref() == Some(resource.as_str())
+                            pl.near(p.x, p.y) && pl.resource.as_deref() == Some(resource.as_str())
                         })
                         .cloned();
                     match spot {
@@ -1329,6 +1728,40 @@ impl World {
                             me.queue.clear();
                             me.looping = None;
                             self.note(&p.name, format!("found no {resource} here"));
+                        }
+                    }
+                }
+                Task::Build { site } => {
+                    let found = self.places.iter().position(|pl| pl.name == site);
+                    match found {
+                        Some(idx)
+                            if self.places[idx].near(p.x, p.y)
+                                && self.places[idx].needs.is_empty() =>
+                        {
+                            self.places[idx].work += 1;
+                            let me = self.player_mut(id).unwrap();
+                            let before = me.level("building");
+                            add(&mut me.xp, "building", 10);
+                            let after = me.level("building");
+                            if after > before {
+                                self.note(&p.name, format!("reached building level {after}"));
+                            }
+                            if self.places[idx].built() {
+                                let pl = self.places[idx].clone();
+                                self.player_mut(id).unwrap().task = Task::Idle;
+                                self.note_kind(
+                                    "build",
+                                    &p.name,
+                                    format!("raised {}, a {}", pl.name, pl.form.name()),
+                                );
+                            }
+                        }
+                        _ => {
+                            let me = self.player_mut(id).unwrap();
+                            me.task = Task::Idle;
+                            me.queue.clear();
+                            me.looping = None;
+                            self.note(&p.name, format!("stopped building {site}"));
                         }
                     }
                 }
@@ -1365,7 +1798,7 @@ impl World {
                 if n.0 < 0 || n.1 < 0 || n.0 >= W || n.1 >= H {
                     continue;
                 }
-                if !self.tile(n.0, n.1).walkable() || prev[idx(n)] != u32::MAX {
+                if self.blocked(n.0, n.1) || prev[idx(n)] != u32::MAX {
                     continue;
                 }
                 prev[idx(n)] = idx(cur) as u32;
@@ -1440,6 +1873,7 @@ impl World {
                 want: None,
                 got,
             } => format!("gathering {resource} ({got} so far, until stopped)"),
+            Task::Build { site } => format!("building {site}"),
         };
         s.push_str(&format!(" Tick {}. You are {doing}.\n", self.tick));
         if !p.queue.is_empty() || p.looping.is_some() {
@@ -1455,8 +1889,10 @@ impl World {
                 .map(|f| format!(" Founded by {}.", self.name_of(f)))
                 .unwrap_or_default();
             s.push_str(&format!(
-                "Here: {} — \"{}\"{founder}\n",
-                pl.name, pl.description
+                "Here: {} — \"{}\"{founder}{}\n",
+                pl.name,
+                pl.description,
+                standing(pl)
             ));
         }
         s.push_str("Places: ");
@@ -1466,16 +1902,20 @@ impl World {
                 s.push_str(", ");
             }
             first = false;
-            let d = (pl.x - p.x).abs().max((pl.y - p.y).abs());
+            let d = pl.dist(p.x, p.y);
+            let (cx, cy) = pl.centre();
             let where_ = if d == 0 {
                 "here".to_string()
             } else {
-                format!("{d} {}", compass(p.x, p.y, pl.x, pl.y))
+                format!("{d} {}", compass(p.x, p.y, cx, cy))
             };
+            let what = standing(pl);
             match (&pl.resource, &pl.skill) {
-                (Some(r), Some(sk)) => s.push_str(&format!("{} ({where_}, {r}/{sk})", pl.name)),
-                (Some(r), None) => s.push_str(&format!("{} ({where_}, {r})", pl.name)),
-                _ => s.push_str(&format!("{} ({where_})", pl.name)),
+                (Some(r), Some(sk)) => {
+                    s.push_str(&format!("{} ({where_}, {r}/{sk}{what})", pl.name))
+                }
+                (Some(r), None) => s.push_str(&format!("{} ({where_}, {r}{what})", pl.name)),
+                _ => s.push_str(&format!("{} ({where_}{what})", pl.name)),
             }
         }
         s.push('\n');
@@ -1489,6 +1929,7 @@ impl World {
                     Task::Idle => "idle".to_string(),
                     Task::Walk { .. } => "walking".to_string(),
                     Task::Gather { resource, .. } => format!("gathering {resource}"),
+                    Task::Build { site } => format!("building {site}"),
                 };
                 if d == 0 {
                     format!("{} (here, {doing})", o.name)
@@ -1598,6 +2039,17 @@ impl World {
             s.push('\n');
         }
         s
+    }
+}
+
+/// What a place is, after its name: nothing for a banner, else its form
+/// and, until it stands, what it still wants.
+fn standing(pl: &Place) -> String {
+    match pl.form {
+        Form::Banner => String::new(),
+        f if pl.built() => format!(", {}", f.name()),
+        f if !pl.needs.is_empty() => format!(", {} site: needs {}", f.name(), pl.bill()),
+        f => format!(", {} under construction {}/{}", f.name(), pl.work, f.work()),
     }
 }
 
@@ -1783,6 +2235,8 @@ mod tests {
             description: "Mushrooms under every log.".into(),
             resource: Some("Mushrooms".into()),
             skill: Some("foraging".into()),
+            form: Form::Banner,
+            style: None,
         };
         // Town is right here; the world puts the hollow a few tiles off.
         let r = w.apply(me, &found).unwrap();
@@ -1924,5 +2378,107 @@ mod tests {
             w.step();
         }
         assert_eq!(w.scripted_idle(), vec![me]);
+    }
+
+    #[test]
+    fn a_building_is_marked_out_supplied_and_raised_and_nobody_walks_through_it() {
+        let mut w = World::new(5);
+        let me = w.join("Ada");
+        let tower = Command::FoundPlace {
+            name: "Grey Spire".into(),
+            description: "A wizard's tower.".into(),
+            resource: None,
+            skill: None,
+            form: Form::Spire,
+            style: Some("dark".into()),
+        };
+        let r = w.apply(me, &tower).unwrap();
+        assert!(
+            r.contains("marks out Grey Spire, a spire") && r.contains("It needs 50 stone"),
+            "{r}"
+        );
+        let site = w.place("Grey Spire").unwrap().clone();
+        assert!(!site.built());
+        assert_eq!(site.size(), (2, 2));
+        let p = w.player(me).unwrap().clone();
+        assert!(
+            !site.blocks(p.x, p.y),
+            "the founder stepped off the footprint"
+        );
+        assert!(w.blocked(site.x, site.y) && w.blocked(site.x + 1, site.y + 1));
+        assert!(w
+            .describe(me)
+            .contains("spire site: needs 50 stone, 12 iron, 4 gold"));
+        // Empty-handed, building is refused with the bill.
+        if site.near(p.x, p.y) {
+            let e = w
+                .apply(
+                    me,
+                    &Command::Build {
+                        site: "grey spire".into(),
+                    },
+                )
+                .unwrap();
+            assert!(e.starts_with("x Grey Spire still needs"), "{e}");
+        }
+        // With the materials in hand, the work starts and the spire rises.
+        {
+            let p = w.player_mut(me).unwrap();
+            for (r, n) in Form::Spire.cost() {
+                add(&mut p.inventory, r, *n);
+            }
+        }
+        w.apply(
+            me,
+            &Command::Build {
+                site: "Grey Spire".into(),
+            },
+        )
+        .unwrap();
+        for _ in 0..120 {
+            w.step();
+            if w.place("Grey Spire").unwrap().built() {
+                break;
+            }
+        }
+        let site = w.place("Grey Spire").unwrap().clone();
+        assert!(site.built(), "{site:?}");
+        assert!(w.player(me).unwrap().inventory.is_empty());
+        assert!(w
+            .events
+            .iter()
+            .any(|e| e.text.starts_with("raised Grey Spire")));
+        assert_eq!(w.player(me).unwrap().task, Task::Idle);
+        assert!(w.player(me).unwrap().level("building") >= 1);
+        assert!(w.describe(me).contains("Grey Spire (") && w.describe(me).contains(", spire)"));
+        // Walking to it lands at its door, not inside it.
+        w.apply(
+            me,
+            &Command::MoveTo {
+                target: "Grey Spire".into(),
+            },
+        )
+        .unwrap();
+        for _ in 0..20 {
+            w.step();
+        }
+        let p = w.player(me).unwrap();
+        assert!(!site.covers(p.x, p.y) && site.near(p.x, p.y));
+        // A banner still costs nothing and stands at once.
+        let camp = Command::FoundPlace {
+            name: "Camp".into(),
+            description: "d".into(),
+            resource: None,
+            skill: None,
+            form: Form::Banner,
+            style: None,
+        };
+        assert!(w.apply(me, &camp).unwrap().contains("founds Camp"));
+        assert!(w.place("Camp").unwrap().built());
+        // Forms parse from what people call them.
+        assert_eq!(Form::parse("wizard's tower"), Some(Form::Spire));
+        assert_eq!(Form::parse("Smithy"), Some(Form::Forge));
+        assert_eq!(Form::parse(""), Some(Form::Banner));
+        assert_eq!(Form::parse("nonsense"), None);
     }
 }

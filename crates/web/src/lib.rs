@@ -10,6 +10,7 @@
 //! `?demo` runs a local world in the tab with no server at all, which is how
 //! the renderer is looked at during development.
 
+mod arch;
 mod draw;
 
 use std::cell::RefCell;
@@ -21,7 +22,7 @@ use wasm_bindgen::{Clamped, JsCast};
 use wasm_bindgen_futures::{spawn_local, JsFuture};
 use web_sys::{CanvasRenderingContext2d, Document, HtmlCanvasElement, HtmlInputElement, Window};
 
-use draw::{Frame, Scene, TILE};
+use draw::{Frame, Scene, VIEW};
 use gemini::{obj, Value};
 
 const API: &str = "/api/world";
@@ -191,8 +192,9 @@ impl Display {
     fn render(&mut self, t: f64) {
         let Some(cur) = &self.cur else { return };
         let k = ((t - self.cur_at) / self.span).clamp(0.0, 1.0) as f32;
-        let want_w = cur.w * TILE;
-        let want_h = cur.h * TILE;
+        // The window is a fixed square whatever the world's size.
+        let want_w = VIEW;
+        let want_h = VIEW;
         if self.frame.w != want_w || self.frame.h != want_h {
             self.frame = Frame::new(want_w, want_h);
             if let Some(canvas) = self.ctx.canvas() {
