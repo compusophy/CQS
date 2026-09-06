@@ -2405,11 +2405,10 @@ impl World {
                 }
                 let line = format!("says \"{text}\"");
                 let tick = self.tick;
-                if self.events.iter().rev().any(|e| {
-                    e.kind == "voice"
-                        && e.name == n.name
-                        && e.text == line
-                        && e.tick + SAY_REPEAT_TICKS > tick
+                // A scripted voice speaks at most once in thirty ticks, and never
+                // repeats itself within that: a script is not a conversation.
+                if self.events.iter().rev().take(80).any(|e| {
+                    e.kind == "voice" && e.name == n.name && e.tick + SAY_REPEAT_TICKS > tick
                 }) {
                     return Ok(String::new());
                 }
