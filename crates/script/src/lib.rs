@@ -118,6 +118,11 @@ pub fn run(source: &str, status: &Value, scene: &Value, memory: &Value) -> Outco
                     site: arg_str(st, 0).ok_or("build needs a site")?,
                 })
             });
+            command(ctx, "abandon", cmds.clone(), |st| {
+                Ok(Command::Abandon {
+                    site: arg_str(st, 0).ok_or("abandon needs a site")?,
+                })
+            });
             command(ctx, "npc", cmds.clone(), |st| {
                 Ok(Command::CreateNpc {
                     name: arg_str(st, 0).ok_or("npc needs a name")?,

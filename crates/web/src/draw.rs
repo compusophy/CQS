@@ -576,10 +576,26 @@ pub fn draw(f: &mut Frame, prev: Option<&Scene>, cur: &Scene, t: f32, ms: f64) {
             }
         }
     }
-    // Names over everything, so a wall never hides who is behind it.
+    // Names over everything, so a wall never hides who is behind it — and
+    // never on top of each other: a name that would land on another is
+    // nudged up until it has a row of its own.
+    labels.sort_by_key(|(_, y, _, _)| *y);
+    let mut placed: Vec<(i32, i32, i32, i32)> = Vec::new();
     for (cx, y, text, ink) in &labels {
-        let w = text_width(text, 2);
-        f.label(cx - w / 2, *y, text, *ink, 2);
+        let w = text_width(text, 2) + 6;
+        let (x0, mut y0) = (cx - w / 2, *y);
+        let overlaps = |y0: i32, placed: &[(i32, i32, i32, i32)]| {
+            placed.iter().any(|&(px, py, pw, ph)| {
+                x0 < px + pw && x0 + w > px && y0 < py + ph && y0 + 16 > py
+            })
+        };
+        let mut tries = 0;
+        while overlaps(y0, &placed) && tries < 12 {
+            y0 -= 17;
+            tries += 1;
+        }
+        placed.push((x0, y0, w, 16));
+        f.label(x0 + 3, y0, text, *ink, 2);
     }
     // Speech, over whoever said it; the newest for each speaker wins.
     let mut spoken: Vec<&str> = Vec::new();

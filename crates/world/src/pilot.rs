@@ -27,7 +27,7 @@ How to pilot:
 - move_to takes a place name or a person's name from the WORLD block, or a compass direction.
 - \"do that again\", \"save this as X\", \"run X\", \"keep doing X forever\" are save_recipe / run_recipe. Recipes are listed in the WORLD block.
 - Players build this world. When the player invents, names, or establishes a location, call found_place with a vivid description drawn from their words and, if it can be worked, a resource word and the skill it trains — invent freely (\"mushrooms\"/\"foraging\", \"clay\"/\"digging\"). When they bring a person or creature into being, call create_npc with a persona: who they are, how they talk, what they know.
-- Buildings are real. found_place takes a form: banner for a mere spot (a camp, a clearing, a fishing hole — free and instant), or a building — hut, house, hall, tower, spire (a wizard's tower), forge, mill, shrine, well — which is marked out on the ground and must be supplied and built. A building's materials must be CARRIED to the site (not banked): gather them, then call build with the site's name; build also walks there, hands over what is carried, and works until it stands. Costs: BUILDING_COSTS. So \"make me a wizard's tower\" is found_place with form spire; \"build it\" or \"make a tower and build it\" is found_place, then gather each material it needs (amounts from the cost table, minus what is already carried), then build. Sites in the WORLD block show what they still need. A style word (stone, timber, dark, white, red, blue, gold, mossy…) gives it a look.
+- Buildings are real. found_place takes a form: banner for a mere spot (a camp, a clearing, a fishing hole — free and instant), or a building — hut, house, hall, tower, spire (a wizard's tower), forge, mill, shrine, well — which is marked out on the ground and must be supplied and built. A building's materials must be CARRIED to the site (not banked): gather them, then call build with the site's name; build also walks there, hands over what is carried, and works until it stands. Costs: BUILDING_COSTS. So \"make me a wizard's tower\" is found_place with form spire; \"build it\" or \"make a tower and build it\" is found_place, then gather each material it needs (amounts from the cost table, minus what is already carried), then build. Sites in the WORLD block show what they still need. abandon tears down a place the player founded. A style word (stone, timber, dark, white, red, blue, gold, mossy…) gives it a look.
 - Talking, roleplay, greetings, questions to people nearby: call say with what the character says out loud, in character, briefly. To talk to someone far away, move_to them first, then say.
 - \"where am I\", \"what's here\": call look.
 - Never narrate, apologise, or explain what the game cannot do — the character has no idea it is in a game. If a wish has no direct function, do the nearest thing in the world: walk somewhere, ask a nearby character (say to them by name), gather what would be needed, found the place they wish existed, or create the person or creature they want to meet. A wish for a shop is found_place plus create_npc, not a say about there being no shop.
@@ -92,6 +92,14 @@ pub fn functions() -> Vec<Function> {
                 "skill" => string("Optional: the skill gathering it trains, one lowercase word (mining, foraging, digging...)."),
             },
             vec!["name", "description", "form"],
+        )),
+        Function::new(
+            "abandon",
+            "Tear down a place the character founded — an unfinished site or a building. Only their own.",
+        )
+        .params(object(
+            obj! {"site" => string("The place's name from the WORLD block.")},
+            vec!["site"],
         )),
         Function::new(
             "build",
@@ -213,6 +221,9 @@ pub fn command(name: &str, args: &Value) -> Result<Command, String> {
             style: opt_text(args, "style"),
         }),
         "build" => Ok(Command::Build {
+            site: text(args, "site"),
+        }),
+        "abandon" => Ok(Command::Abandon {
             site: text(args, "site"),
         }),
         "create_npc" => Ok(Command::CreateNpc {
@@ -410,7 +421,7 @@ mod tests {
                 .get("functionDeclarations")
                 .as_arr()
                 .len(),
-            13
+            14
         );
         assert_eq!(
             b.get("generationConfig")

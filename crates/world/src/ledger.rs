@@ -151,6 +151,7 @@ impl Command {
                     .with_opt("style", style.as_deref())
             }
             Command::Build { site } => obj! {"c" => "build", "site" => site.as_str()},
+            Command::Abandon { site } => obj! {"c" => "abandon", "site" => site.as_str()},
             Command::CreateNpc { name, persona } => obj! {"c" => "npc", "name" => name.as_str(), "persona" => persona.as_str()},
             Command::SetScript { source } => obj! {"c" => "script", "source" => source.as_str()},
         }
@@ -190,6 +191,7 @@ impl Command {
                 style: opt("style"),
             },
             Some("build") => Command::Build { site: text("site") },
+            Some("abandon") => Command::Abandon { site: text("site") },
             Some("npc") => Command::CreateNpc {
                 name: text("name"),
                 persona: text("persona"),
@@ -454,6 +456,9 @@ mod tests {
                 style: Some("dark".into()),
             },
             Command::Build {
+                site: "Damp Hollow".into(),
+            },
+            Command::Abandon {
                 site: "Damp Hollow".into(),
             },
             Command::CreateNpc {

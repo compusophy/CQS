@@ -424,6 +424,8 @@ pub enum Command {
     },
     /// Carry materials to a site and work on it until it stands.
     Build { site: String },
+    /// Tear down a place the character founded, site or building.
+    Abandon { site: String },
     /// Bring a character into the world where the player stands.
     CreateNpc { name: String, persona: String },
     /// Set the standing Lua script; an empty source clears it.
@@ -483,6 +485,7 @@ impl fmt::Display for Command {
             } => write!(f, "run {name}"),
             Command::FoundPlace { name, .. } => write!(f, "found {name}"),
             Command::Build { site } => write!(f, "build {site}"),
+            Command::Abandon { site } => write!(f, "abandon {site}"),
             Command::CreateNpc { name, .. } => write!(f, "create {name}"),
             Command::SetScript { source } if source.trim().is_empty() => write!(f, "clear script"),
             Command::SetScript { .. } => write!(f, "set script"),
@@ -884,6 +887,10 @@ impl World {
     /// nobody but the founder standing on it. Where a new place goes.
     fn place_spot(&self, x: i32, y: i32, size: (i32, i32), who: PlayerId) -> Option<(i32, i32)> {
         let (w, h) = size;
+        // Banners block nothing, but they are 1x1 like a hut; the walk-around
+        // check is cheap, so every footprint takes it.
+        let blocks = true;
+        let reach_now = self.reach(None);
         let mut best: Option<((i32, i32), i32)> = None;
         for dy in -6..=6i32 {
             for dx in -6..=6i32 {
@@ -891,12 +898,19 @@ impl World {
                 if ax < 0 || ay < 0 || ax + w > W || ay + h > H {
                     continue;
                 }
+                let d = dx.abs() + dy.abs();
+                if best.is_some_and(|(_, bd)| d >= bd) {
+                    continue;
+                }
                 let mut fits = true;
                 'tiles: for ty in ay..ay + h {
                     for tx in ax..ax + w {
                         let t = self.tile(tx, ty);
+                        // Not on water, the square, or a road: the ford is a
+                        // road, and a house on the ford is an island.
                         if !t.walkable()
                             || t == Tile::Town
+                            || t == Tile::Road
                             || self.places.iter().any(|p| p.dist(tx, ty) <= 1)
                             || self.occupied(tx, ty, Some(who))
                         {
@@ -908,13 +922,44 @@ impl World {
                 if !fits {
                     continue;
                 }
-                let d = dx.abs() + dy.abs();
-                if best.map_or(true, |(_, bd)| d < bd) {
-                    best = Some(((ax, ay), d));
+                // A wall must not cut the map: everything Town can reach now
+                // must still be reachable around it.
+                if blocks && self.reach(Some((ax, ay, w, h))) + (w * h) as usize != reach_now {
+                    continue;
                 }
+                best = Some(((ax, ay), d));
             }
         }
         best.map(|(at, _)| at)
+    }
+
+    /// How many tiles Town can walk to, with an extra rect walled off.
+    fn reach(&self, wall: Option<(i32, i32, i32, i32)>) -> usize {
+        let inside = |x: i32, y: i32| {
+            wall.is_some_and(|(wx, wy, ww, wh)| x >= wx && y >= wy && x < wx + ww && y < wy + wh)
+        };
+        let start = self.places[0].door();
+        let idx = |(x, y): (i32, i32)| (y * W + x) as usize;
+        let mut seen = vec![false; (W * H) as usize];
+        let mut queue = VecDeque::new();
+        seen[idx(start)] = true;
+        queue.push_back(start);
+        let mut n = 0;
+        while let Some((cx, cy)) = queue.pop_front() {
+            n += 1;
+            for (_, (dx, dy)) in DIRS.iter().take(4) {
+                let (nx, ny) = (cx + dx, cy + dy);
+                if nx < 0 || ny < 0 || nx >= W || ny >= H || seen[idx((nx, ny))] {
+                    continue;
+                }
+                if self.blocked(nx, ny) || inside(nx, ny) {
+                    continue;
+                }
+                seen[idx((nx, ny))] = true;
+                queue.push_back((nx, ny));
+            }
+        }
+        n
     }
 
     /// Players whose standing script should run now: idle, nothing queued,    /// Players whose standing script should run now: idle, nothing queued,
@@ -1510,6 +1555,23 @@ impl World {
                     pl.name,
                     pl.form.work().saturating_sub(pl.work)
                 ))
+            }
+            Command::Abandon { site } => {
+                let target = self
+                    .place(site)
+                    .map(|p| p.name.clone())
+                    .ok_or_else(|| format!("there is no place called '{site}'"))?;
+                let idx = self.places.iter().position(|p| p.name == target).unwrap();
+                if self.places[idx].founder != Some(who) {
+                    return Err(format!("{target} is not {name}'s to tear down"));
+                }
+                let pl = self.places.remove(idx);
+                self.note_kind(
+                    "build",
+                    &name,
+                    format!("tore down {}, a {}", pl.name, pl.form.name()),
+                );
+                Ok(format!("{name} tears down {}.", pl.name))
             }
             Command::CreateNpc {
                 name: nname,
@@ -2480,5 +2542,60 @@ mod tests {
         assert_eq!(Form::parse("Smithy"), Some(Form::Forge));
         assert_eq!(Form::parse(""), Some(Form::Banner));
         assert_eq!(Form::parse("nonsense"), None);
+    }
+
+    #[test]
+    fn a_building_never_cuts_the_map_and_its_founder_can_tear_it_down() {
+        let mut w = World::new(5);
+        let me = w.join("Ada");
+        // Stand on the ford — the one crossing — and found a house.
+        let ford = w.place("River Ford").unwrap().clone();
+        {
+            let p = w.player_mut(me).unwrap();
+            p.x = ford.x;
+            p.y = ford.y;
+        }
+        let house = Command::FoundPlace {
+            name: "Ford House".into(),
+            description: "d".into(),
+            resource: None,
+            skill: None,
+            form: Form::House,
+            style: None,
+        };
+        w.apply(me, &house).unwrap();
+        let hp = w.place("Ford House").unwrap().clone();
+        for ty in hp.y..hp.y + 2 {
+            for tx in hp.x..hp.x + 2 {
+                assert_ne!(w.tile(tx, ty), Tile::Road, "never on a road");
+            }
+        }
+        // Both banks still reach Town.
+        let town = w.places[0].door();
+        assert!(w.path_step((2, ford.y), town).is_some());
+        assert!(w.path_step((W - 2, ford.y), town).is_some());
+        // Only the founder tears it down; seeded places are nobody's.
+        let other = w.join("Bea");
+        let tear = Command::Abandon {
+            site: "ford house".into(),
+        };
+        assert!(w
+            .apply(other, &tear)
+            .unwrap()
+            .starts_with("x Ford House is not"));
+        assert!(w
+            .apply(
+                me,
+                &Command::Abandon {
+                    site: "Town".into()
+                }
+            )
+            .unwrap()
+            .starts_with("x Town is not"));
+        assert!(w
+            .apply(me, &tear)
+            .unwrap()
+            .contains("tears down Ford House"));
+        assert!(!w.places.iter().any(|p| p.name == "Ford House"));
     }
 }
